@@ -1,0 +1,20 @@
+# Build outputs
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.cache
+*.pdb
+
+# Runtime/local captures
+*.log
+tools/EntityEspProbe/captures/
+
+# Local ACT/game config
+*.local.json
+EntityEspPlugin.json
+
+
+# Local/private reference assemblies
+lib/Advanced_Combat_Tracker.dll

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\EntityEspActPlugin.Core\Models\*.cs" Link="Core\Models\%(Filename)%(Extension)" />
+    <Compile Include="..\EntityEspActPlugin.Core\Services\*.cs" Link="Core\Services\%(Filename)%(Extension)" />
+    <Reference Include="Advanced Combat Tracker">
+      <HintPath>..\..\lib\Advanced_Combat_Tracker.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Numerics" />
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+</Project>

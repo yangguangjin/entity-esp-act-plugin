@@ -1,3 +1,23 @@
+# Entity ESP ACT Plugin
+
+作者联系方式：QQ1115284886  光进不出。
+
+本项目使用 MIT License 开源，协议文件见仓库根目录 `LICENSE`。
+
+构建命令：
+
+```bash
+dotnet build EntityEspActPlugin.sln -c Release
+```
+
+插件 DLL：
+
+```text
+src/EntityEspActPlugin.Act/bin/Release/net48/EntityEspActPlugin.Act.dll
+```
+
+---
+
 # 方案 B：ACT 原生实时跟随实体插件需求技术设计
 
 ## 1. 方案定位
