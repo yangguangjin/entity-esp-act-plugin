@@ -71,7 +71,7 @@ src/EntityEspActPlugin.Act/bin/Release/net48/EntityEspActPlugin.Act.dll
 
 ## 打包与发布
 
-版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.0` 对应 tag `v0.1.0`。
+版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.1` 对应 tag `v0.1.1`。
 
 本地生成可发布 zip：
 

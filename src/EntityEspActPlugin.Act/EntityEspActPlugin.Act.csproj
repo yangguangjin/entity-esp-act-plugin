@@ -3,11 +3,12 @@
     <TargetFramework>net48</TargetFramework>
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
+    <DefineConstants Condition="!Exists('..\..\lib\Advanced_Combat_Tracker.dll')">$(DefineConstants);ENTITY_ESP_ACT_STUBS</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\EntityEspActPlugin.Core\Models\*.cs" Link="Core\Models\%(Filename)%(Extension)" />
     <Compile Include="..\EntityEspActPlugin.Core\Services\*.cs" Link="Core\Services\%(Filename)%(Extension)" />
-    <Reference Include="Advanced Combat Tracker">
+    <Reference Include="Advanced Combat Tracker" Condition="Exists('..\..\lib\Advanced_Combat_Tracker.dll')">
       <HintPath>..\..\lib\Advanced_Combat_Tracker.dll</HintPath>
       <Private>false</Private>
     </Reference>
