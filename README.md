@@ -69,6 +69,31 @@ dotnet build EntityEspActPlugin.sln -c Release
 src/EntityEspActPlugin.Act/bin/Release/net48/EntityEspActPlugin.Act.dll
 ```
 
+## 打包与发布
+
+版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.0` 对应 tag `v0.1.0`。
+
+本地生成可发布 zip：
+
+```bash
+build/package-release.sh
+```
+
+生成产物位于：
+
+```text
+artifacts/release/EntityEspActPlugin-vX.Y.Z.zip
+```
+
+发布到 GitHub：
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+推送 tag 后，GitHub Actions 会执行 Release 构建、测试、打包，并把 `EntityEspActPlugin-vX.Y.Z.zip` 上传到对应 GitHub Release。若 tag 与 `Directory.Build.props` 中的版本不一致，打包步骤会失败，避免错误版本发布。
+
 ## 安装到 ACT
 
 1. 打开 ACT。
