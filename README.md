@@ -93,7 +93,9 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-推送 tag 后，GitHub Actions 会执行 Release 构建、测试、打包，并把 `EntityEspActPlugin-vX.Y.Z.zip` 上传到对应 GitHub Release。若 tag 与 `Directory.Build.props` 中的版本不一致，打包步骤会失败，避免错误版本发布。
+发布包必须在能访问真实 `lib/Advanced_Combat_Tracker.dll` 的环境构建，不能用 `ENTITY_ESP_ACT_STUBS` 构建结果发布；否则 ACT 会提示“该程序集没有实现ACT插件接口的类”。
+
+推送 tag 后，GitHub Actions 会执行 Release 流程；如果 CI 环境没有提供真实 ACT 引用，打包步骤会失败，避免上传 ACT 无法加载的 stub 包。可在本机执行 `build/package-release.sh` 生成 zip 后，用 GitHub Release 页面或 `gh release upload vX.Y.Z artifacts/release/EntityEspActPlugin-vX.Y.Z.zip --clobber` 上传。若 tag 与 `Directory.Build.props` 中的版本不一致，打包步骤会失败，避免错误版本发布。
 
 ## 安装到 ACT
 

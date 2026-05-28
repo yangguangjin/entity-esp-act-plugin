@@ -31,6 +31,17 @@ if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" != "v$VERSION" ]
   exit 1
 fi
 
+ACT_REFERENCE="lib/Advanced_Combat_Tracker.dll"
+if [[ ! -f "$ACT_REFERENCE" ]]; then
+  cat >&2 <<'EOF'
+Missing real ACT reference: lib/Advanced_Combat_Tracker.dll
+Release packages must be built against the real Advanced Combat Tracker assembly.
+Do not publish ENTITY_ESP_ACT_STUBS builds: ACT will reject them with
+"该程序集没有实现ACT插件接口的类。"
+EOF
+  exit 1
+fi
+
 dotnet build "$PROJECT" -c "$CONFIGURATION" --no-restore
 
 test -f "$DLL_PATH" || { echo "Missing plugin DLL: $DLL_PATH" >&2; exit 1; }
