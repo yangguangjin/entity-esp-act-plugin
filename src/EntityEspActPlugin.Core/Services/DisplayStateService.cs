@@ -22,6 +22,7 @@ public sealed class DisplayStateService
     public IReadOnlyCollection<uint> PartyEntityIds { get; set; } = Array.Empty<uint>();
     public Action<IReadOnlyList<EntitySnapshot>>? OnRawEntitiesUpdated { get; set; }
     public Func<EntitySnapshot, bool>? IsEntityActiveByActLog { get; set; }
+    public Func<IReadOnlyList<EntitySnapshot>, IReadOnlyList<EntitySnapshot>>? GetAdditionalEntitiesByActLog { get; set; }
 
     public IReadOnlyList<EntityDisplayState> BuildStates(int width, int height, EspConfig config)
     {
@@ -30,9 +31,19 @@ public sealed class DisplayStateService
         var entities = _entitySource.GetEntities();
         LastRawEntities = entities.ToArray();
         OnRawEntitiesUpdated?.Invoke(LastRawEntities);
-        var party = BuildPartyContext(LastRawEntities, PartyEntityIds);
+        var displayEntities = LastRawEntities;
+        if (config.UseActLogActivityLifetime && GetAdditionalEntitiesByActLog != null)
+        {
+            var additionalEntities = GetAdditionalEntitiesByActLog(LastRawEntities);
+            if (additionalEntities != null && additionalEntities.Count > 0)
+            {
+                displayEntities = LastRawEntities.Concat(additionalEntities).ToArray();
+            }
+        }
+
+        var party = BuildPartyContext(displayEntities, PartyEntityIds);
         var states = EntityDisplayPipeline.BuildVisibleStates(
-            entities,
+            displayEntities,
             camera,
             config,
             party,

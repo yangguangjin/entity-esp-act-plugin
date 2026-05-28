@@ -39,6 +39,8 @@ var tests = new List<(string Name, Action Body)>
     ("DisplayStateService keeps raw entities for log context", DisplayStateServiceKeepsRawEntitiesForLogContext),
     ("Entity activity tracker defaults and expires idle entities", EntityActivityTrackerDefaultsAndExpiresIdleEntities),
     ("Entity activity tracker renews and removes from ACT logs", EntityActivityTrackerRenewsAndRemovesFromActLogs),
+    ("Entity activity tracker holds short-lived terminal entities", EntityActivityTrackerHoldsShortLivedTerminalEntities),
+    ("DisplayStateService renders held short-lived deleted entities", DisplayStateServiceRendersHeldShortLivedDeletedEntities),
     ("Entity activity tracker expires deaths and zero HP only for target", EntityActivityTrackerExpiresDeathsAndZeroHpOnlyForTarget),
     ("Entity activity tracker runs before related log filters", EntityActivityTrackerRunsBeforeRelatedLogFilters),
     ("DisplayStateService gates inactive ACT log entities", DisplayStateServiceGatesInactiveActLogEntities),
@@ -51,6 +53,9 @@ var tests = new List<(string Name, Action Body)>
     ("Overlay text opacity stays readable when background opacity is low", OverlayTextOpacityStaysReadableWhenBackgroundOpacityIsLow),
     ("Related ACT log store keeps all recent entity lines", RelatedActLogStoreKeepsRecentEntityLines),
     ("Related ACT log store display windows are independent", RelatedActLogStoreDisplayWindowsAreIndependent),
+    ("Related ACT log panel keeps logs without camera states", RelatedActLogPanelKeepsLogsWithoutCameraStates),
+    ("Related ACT log panel keeps caster side of 14 lines", RelatedActLogPanelKeepsCasterSideOf14Lines),
+    ("Related ACT log panel height keeps content rows", RelatedActLogPanelHeightKeepsContentRows),
     ("Related ACT log formatter simplifies TRN fields", RelatedActLogFormatterSimplifiesTrnFields),
     ("Related ACT log 14 player filter is scoped", RelatedActLog14PlayerFilterIsScoped),
     ("Related ACT log 1A player filter is scoped", RelatedActLog1APlayerFilterIsScoped),
@@ -758,6 +763,66 @@ static void EntityActivityTrackerRenewsAndRemovesFromActLogs()
     AssertFalse(tracker.IsActive(entity), "network CombatantMemory Remove should hide entity immediately");
 }
 
+static void EntityActivityTrackerHoldsShortLivedTerminalEntities()
+{
+    var now = new DateTime(2026, 5, 28, 12, 30, 0, DateTimeKind.Utc);
+    var tracker = new EntityActivityTracker(() => now);
+    var shortLived = new EntitySnapshot { EntityId = 0x4000AAAA };
+    var longLived = new EntitySnapshot { EntityId = 0x4000BBBB };
+
+    tracker.ObserveEntities(new[] { shortLived, longLived }, 10);
+    now = now.AddSeconds(1.2);
+    tracker.ObserveLogLine("[12:30:01.200] 04:4000AAAA:Short:0:100:0:0:0:0:0:0:0:0:0:72:357:48:0", 10, true, 2, 8);
+
+    AssertTrue(tracker.IsActive(shortLived), "short-lived removed entity should stay active for the configured hold window");
+    AssertNearTime(now.AddSeconds(8), tracker.GetExpiresAt(0x4000AAAA), "short-lived hold expiry");
+
+    now = now.AddSeconds(7.9);
+    AssertTrue(tracker.IsActive(shortLived), "short-lived hold should remain active before M seconds elapse");
+    now = now.AddSeconds(0.2);
+    AssertFalse(tracker.IsActive(shortLived), "short-lived hold should expire after M seconds");
+
+    now = new DateTime(2026, 5, 28, 12, 40, 0, DateTimeKind.Utc);
+    tracker.ObserveEntities(new[] { longLived }, 10);
+    now = now.AddSeconds(3.1);
+    tracker.ObserveLogLine("[12:40:03.100] 19:4000BBBB:Long:4000C0DE:Killer", 10, true, 2, 8);
+
+    AssertFalse(tracker.IsActive(longLived), "terminal events after the short-lived threshold should still hide immediately");
+}
+
+static void DisplayStateServiceRendersHeldShortLivedDeletedEntities()
+{
+    var now = new DateTime(2026, 5, 28, 13, 0, 0, DateTimeKind.Utc);
+    var tracker = new EntityActivityTracker(() => now);
+    var entity = new EntitySnapshot
+    {
+        EntityId = 0x40001234,
+        Kind = EntityKind.BattleNpc,
+        Position = new Vector3(0f, -1.8f, 0f),
+        DistanceToPlayer = 5f,
+        IsVisible = true,
+        IsTargetable = true,
+    };
+    var source = new MutableEntitySource(new[] { entity });
+    var service = new DisplayStateService(source, new MockCameraSource());
+    service.OnRawEntitiesUpdated = entities => tracker.ObserveEntities(entities, 10);
+    service.IsEntityActiveByActLog = tracker.IsActive;
+    service.GetAdditionalEntitiesByActLog = tracker.GetPreservedEntities;
+    var config = new EspConfig { UseActLogActivityLifetime = true, EntityActivityLifetimeSeconds = 10f, PreserveShortLivedEntitiesAfterTerminal = true, ShortLivedEntityMaxAgeSeconds = 2f, ShortLivedEntityHoldSeconds = 8f };
+
+    AssertEqual(1, service.BuildStates(1000, 800, config).Count, "entity should render while present");
+
+    now = now.AddSeconds(1);
+    tracker.ObserveLogLine("[13:00:01.000] 105:Remove:40001234", 10, true, 2, 8);
+    AssertEqual(1, service.BuildStates(1000, 800, config).Count, "short-lived terminal entity should remain visible if the object table still contains it for a frame");
+    source.Entities = Array.Empty<EntitySnapshot>();
+
+    AssertEqual(1, service.BuildStates(1000, 800, config).Count, "short-lived deleted entity should render from its last snapshot during hold window");
+
+    now = now.AddSeconds(8.1);
+    AssertEqual(0, service.BuildStates(1000, 800, config).Count, "held deleted entity should disappear after hold window");
+}
+
 static void EntityActivityTrackerExpiresDeathsAndZeroHpOnlyForTarget()
 {
     var now = new DateTime(2026, 5, 28, 12, 0, 0, DateTimeKind.Utc);
@@ -972,6 +1037,9 @@ static void EspConfigExposesRenderAndScanControls()
     AssertEqual(90, config.RenderFps, "default render fps");
     AssertFalse(config.UseActLogActivityLifetime, "ACT activity lifetime gate should be opt-in by default");
     AssertEqual(15f, config.EntityActivityLifetimeSeconds, "default entity ACT activity lifetime seconds");
+    AssertTrue(config.PreserveShortLivedEntitiesAfterTerminal, "short-lived terminal hold should be enabled by default");
+    AssertEqual(2f, config.ShortLivedEntityMaxAgeSeconds, "default short-lived entity threshold seconds");
+    AssertEqual(10f, config.ShortLivedEntityHoldSeconds, "default short-lived entity hold seconds");
     AssertTrue(config.ShowCastBar, "cast bar should be enabled by default");
     AssertTrue(config.ShowUntargetable, "untargetable entities should be allowed by default");
     AssertTrue(config.ShowRelatedActLogs, "related ACT logs should be enabled by default");
@@ -1086,6 +1154,44 @@ static void RelatedActLogStoreDisplayWindowsAreIndependent()
     now = now.AddSeconds(7);
     AssertEqual(0, store.GetRecent(0x40009999, 6, 10).Count, "short near-entity window should not show expired line");
     AssertEqual(1, store.GetRecentForEntities(new[] { 0x40009999u }, 10, 10).Count, "long side-panel window should still show the same cached line");
+}
+
+static void RelatedActLogPanelKeepsLogsWithoutCameraStates()
+{
+    var now = new DateTime(2026, 5, 28, 11, 10, 0, DateTimeKind.Utc);
+    var store = new RelatedActLogStore(() => now);
+    var filters = new RelatedActLogFilterConfig { Log14 = true };
+
+    store.AddLine("[19:00:00.000] StartsCasting 14:40007FB6:青龙:37FE:阴阳五行:40007FB6:青龙:3.700:99.72:97.43:0.00:0.01", filters, true);
+
+    AssertEqual(0, store.GetRecentForEntities(Array.Empty<uint>(), 10, 10).Count, "visible-state based query has no rows when camera projection sees no entities");
+    var panelRows = store.GetRecentForPanel(10, 10);
+    AssertEqual(1, panelRows.Count, "right side panel should behave like a log recorder and not require camera-visible entity states");
+    AssertEqual(0x40007FB6u, panelRows[0].Key, "panel row should still keep a useful entity id prefix");
+}
+
+static void RelatedActLogPanelKeepsCasterSideOf14Lines()
+{
+    var now = new DateTime(2026, 5, 28, 10, 40, 0, DateTimeKind.Utc);
+    var store = new RelatedActLogStore(() => now);
+    var filters = new RelatedActLogFilterConfig { Log14 = true };
+    var context = new RelatedActLogContext();
+    context.PlayerEntityIds.Add(0x100472EA);
+    context.PlayerOrOwnedEntityIds.Add(0x100472EA);
+    store.UpdateContext(context);
+
+    store.AddLine("[18:40:00.000] StartsCasting 14:40006E25:来访石像魔:6503:闪灼:100472EA:挽明暗轧止:3.0:-739.87:718.68:0.20:0.06", filters, true);
+
+    AssertEqual(1, store.GetRecentForEntities(new[] { 0x40006E25u }, 10, 10).Count, "right side panel should find a visible casting entity's own 14 cast even when the target is a filtered player");
+}
+
+static void RelatedActLogPanelHeightKeepsContentRows()
+{
+    var lineHeight = 18f;
+    var lineCount = 2;
+    var height = RelatedActLogPanelLayout.CalculatePanelHeight(lineCount, lineHeight, 1080f);
+
+    AssertTrue(height >= lineCount * lineHeight + 12f, "panel height should reserve enough space for title plus at least one content row");
 }
 
 static void RelatedActLogFormatterSimplifiesTrnFields()
@@ -1323,6 +1429,26 @@ static void AssertNear(float expected, float actual, string name)
     {
         throw new InvalidOperationException($"{name}: expected {expected}, got {actual}");
     }
+}
+
+static void AssertNearTime(DateTime expected, DateTime actual, string name)
+{
+    if (Math.Abs((expected - actual).TotalMilliseconds) > 1)
+    {
+        throw new InvalidOperationException($"{name}: expected {expected:o}, got {actual:o}");
+    }
+}
+
+sealed class MutableEntitySource : IEntitySource
+{
+    public MutableEntitySource(IReadOnlyList<EntitySnapshot> entities)
+    {
+        Entities = entities;
+    }
+
+    public IReadOnlyList<EntitySnapshot> Entities { get; set; }
+
+    public IReadOnlyList<EntitySnapshot> GetEntities() => Entities;
 }
 
 sealed class StaticEntitySource : IEntitySource

@@ -19,6 +19,9 @@ public sealed class EspConfig
     public int RenderFps { get; set; } = 90;
     public bool UseActLogActivityLifetime { get; set; }
     public float EntityActivityLifetimeSeconds { get; set; } = 15f;
+    public bool PreserveShortLivedEntitiesAfterTerminal { get; set; } = true;
+    public float ShortLivedEntityMaxAgeSeconds { get; set; } = 2f;
+    public float ShortLivedEntityHoldSeconds { get; set; } = 10f;
 
     public float FontSize { get; set; } = 15f;
     public float Opacity { get; set; } = 0.001f;

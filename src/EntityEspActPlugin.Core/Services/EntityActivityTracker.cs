@@ -18,6 +18,9 @@ public sealed class EntityActivityTracker
     private readonly object _syncRoot = new object();
     private readonly Dictionary<uint, DateTime> _expiresAtByEntityId = new Dictionary<uint, DateTime>();
     private readonly Dictionary<uint, DateTime> _lastSeenByEntityId = new Dictionary<uint, DateTime>();
+    private readonly Dictionary<uint, DateTime> _createdAtByEntityId = new Dictionary<uint, DateTime>();
+    private readonly Dictionary<uint, DateTime> _preservedUntilByEntityId = new Dictionary<uint, DateTime>();
+    private readonly Dictionary<uint, EntitySnapshot> _lastSnapshotByEntityId = new Dictionary<uint, EntitySnapshot>();
     private readonly Func<DateTime> _clock;
 
     public EntityActivityTracker()
@@ -49,7 +52,21 @@ public sealed class EntityActivityTracker
                 }
 
                 _lastSeenByEntityId[entity.EntityId] = now;
-                if (!_expiresAtByEntityId.ContainsKey(entity.EntityId))
+                _lastSnapshotByEntityId[entity.EntityId] = entity;
+                var wasExpiredPreserved = _preservedUntilByEntityId.TryGetValue(entity.EntityId, out var preservedUntil) && preservedUntil < now;
+                if (wasExpiredPreserved)
+                {
+                    _preservedUntilByEntityId.Remove(entity.EntityId);
+                }
+
+                if (!_createdAtByEntityId.ContainsKey(entity.EntityId)
+                    || (_expiresAtByEntityId.TryGetValue(entity.EntityId, out var previousExpiresAt) && previousExpiresAt == DateTime.MinValue)
+                    || wasExpiredPreserved)
+                {
+                    _createdAtByEntityId[entity.EntityId] = now;
+                }
+
+                if (!_expiresAtByEntityId.ContainsKey(entity.EntityId) || _expiresAtByEntityId[entity.EntityId] == DateTime.MinValue || wasExpiredPreserved)
                 {
                     _expiresAtByEntityId[entity.EntityId] = defaultExpiresAt;
                 }
@@ -61,10 +78,21 @@ public sealed class EntityActivityTracker
 
     public void ObserveLogLine(string line, double lifetimeSeconds)
     {
+        ObserveLogLine(line, lifetimeSeconds, false, 0d, 0d);
+    }
+
+    public void ObserveLogLine(string line, double lifetimeSeconds, bool preserveShortLivedTerminalEntities, double shortLivedMaxAgeSeconds, double shortLivedHoldSeconds)
+    {
         if (string.IsNullOrWhiteSpace(line) || !TryNormalizeLifetime(lifetimeSeconds, out var lifetime))
         {
             return;
         }
+
+        var maxAge = 0d;
+        var holdSeconds = 0d;
+        var preserveShortLived = preserveShortLivedTerminalEntities
+            && TryNormalizeShortLivedWindow(shortLivedMaxAgeSeconds, out maxAge)
+            && TryNormalizeLifetime(shortLivedHoldSeconds, out holdSeconds);
 
         var type = GetActivityLineType(line);
         if (!ActivityLineTypes.Contains(type))
@@ -85,7 +113,31 @@ public sealed class EntityActivityTracker
         {
             foreach (var entityId in entityIds)
             {
-                _expiresAtByEntityId[entityId] = expiresAt;
+                var entityExpiresAt = expiresAt;
+                if (terminalEntityIds.Count > 0)
+                {
+                    if (preserveShortLived && IsShortLivedEntityLocked(entityId, now, maxAge))
+                    {
+                        entityExpiresAt = SafeAddSeconds(now, holdSeconds);
+                        _preservedUntilByEntityId[entityId] = entityExpiresAt;
+                    }
+                    else
+                    {
+                        _preservedUntilByEntityId.Remove(entityId);
+                    }
+                }
+                else
+                {
+                    if (!_createdAtByEntityId.ContainsKey(entityId)
+                        || (_expiresAtByEntityId.TryGetValue(entityId, out var previousExpiresAt) && previousExpiresAt == DateTime.MinValue))
+                    {
+                        _createdAtByEntityId[entityId] = now;
+                    }
+
+                    _preservedUntilByEntityId.Remove(entityId);
+                }
+
+                _expiresAtByEntityId[entityId] = entityExpiresAt;
                 _lastSeenByEntityId[entityId] = now;
             }
 
@@ -115,6 +167,41 @@ public sealed class EntityActivityTracker
         {
             return _expiresAtByEntityId.TryGetValue(entityId, out var expiresAt) ? expiresAt : DateTime.MinValue;
         }
+    }
+
+    public IReadOnlyList<EntitySnapshot> GetPreservedEntities(IReadOnlyList<EntitySnapshot> currentEntities)
+    {
+        var currentIds = new HashSet<uint>();
+        if (currentEntities != null)
+        {
+            foreach (var entity in currentEntities)
+            {
+                if (IsTrackableEntityId(entity.EntityId))
+                {
+                    currentIds.Add(entity.EntityId);
+                }
+            }
+        }
+
+        var now = _clock();
+        var preserved = new List<EntitySnapshot>();
+        lock (_syncRoot)
+        {
+            foreach (var pair in _preservedUntilByEntityId)
+            {
+                if (pair.Value < now || currentIds.Contains(pair.Key))
+                {
+                    continue;
+                }
+
+                if (_lastSnapshotByEntityId.TryGetValue(pair.Key, out var snapshot))
+                {
+                    preserved.Add(snapshot);
+                }
+            }
+        }
+
+        return preserved;
     }
 
     public static string GetActivityLineType(string line)
@@ -328,6 +415,29 @@ public sealed class EntityActivityTracker
         return true;
     }
 
+    private static bool TryNormalizeShortLivedWindow(double seconds, out double normalized)
+    {
+        normalized = 0;
+        if (double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds <= 0)
+        {
+            return false;
+        }
+
+        normalized = Math.Min(120d, seconds);
+        return true;
+    }
+
+    private bool IsShortLivedEntityLocked(uint entityId, DateTime now, double maxAgeSeconds)
+    {
+        if (!_createdAtByEntityId.TryGetValue(entityId, out var createdAt))
+        {
+            return false;
+        }
+
+        var ageSeconds = (now - createdAt).TotalSeconds;
+        return ageSeconds >= 0d && ageSeconds < maxAgeSeconds;
+    }
+
     private static DateTime SafeAddSeconds(DateTime value, double seconds)
     {
         if (value > DateTime.MaxValue.AddSeconds(-seconds))
@@ -356,6 +466,9 @@ public sealed class EntityActivityTracker
         {
             _lastSeenByEntityId.Remove(entityId);
             _expiresAtByEntityId.Remove(entityId);
+            _createdAtByEntityId.Remove(entityId);
+            _preservedUntilByEntityId.Remove(entityId);
+            _lastSnapshotByEntityId.Remove(entityId);
         }
     }
 

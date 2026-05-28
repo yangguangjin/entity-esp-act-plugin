@@ -9,6 +9,7 @@ public sealed class RelatedActLogStore
 {
     private readonly object _syncRoot = new object();
     private readonly Dictionary<uint, List<RelatedActLogEntry>> _logsByEntity = new Dictionary<uint, List<RelatedActLogEntry>>();
+    private readonly List<KeyValuePair<uint, RelatedActLogEntry>> _panelLogs = new List<KeyValuePair<uint, RelatedActLogEntry>>();
     private readonly Func<DateTime> _clock;
     private readonly AbilityVfxCandidateProvider? _vfxCandidateProvider;
     private RelatedActLogContext? _context;
@@ -70,6 +71,12 @@ public sealed class RelatedActLogStore
         };
         lock (_syncRoot)
         {
+            var panelEntityId = ExtractPanelEntityId(line, entityIds);
+            if (panelEntityId != 0)
+            {
+                _panelLogs.Add(new KeyValuePair<uint, RelatedActLogEntry>(panelEntityId, entry));
+            }
+
             foreach (var entityId in entityIds)
             {
                 if (!_logsByEntity.TryGetValue(entityId, out var list))
@@ -139,6 +146,21 @@ public sealed class RelatedActLogStore
             .Take(maxLines)
             .OrderBy(pair => pair.Value.Timestamp)
             .ToArray();
+    }
+
+    public IReadOnlyList<KeyValuePair<uint, RelatedActLogEntry>> GetRecentForPanel(double seconds, int maxLines)
+    {
+        if (seconds <= 0 || maxLines <= 0)
+        {
+            return Array.Empty<KeyValuePair<uint, RelatedActLogEntry>>();
+        }
+
+        var cutoff = _clock().AddSeconds(-seconds);
+        lock (_syncRoot)
+        {
+            var recent = _panelLogs.Where(pair => pair.Value.Timestamp >= cutoff).ToArray();
+            return recent.Skip(Math.Max(0, recent.Length - maxLines)).ToArray();
+        }
     }
 
     private AbilityVfxCandidate? FindVfxCandidate(string line)
@@ -298,11 +320,82 @@ public sealed class RelatedActLogStore
         var type = GetLineType(line);
         if (type == "14" || type == "17")
         {
+            var ids = new HashSet<uint>();
+            var casterId = ExtractCastCasterEntityId(line);
             var targetId = ExtractCastTargetEntityId(line);
-            return targetId == 0 ? new HashSet<uint>() : new HashSet<uint> { targetId };
+            if (casterId != 0)
+            {
+                ids.Add(casterId);
+            }
+
+            if (targetId != 0)
+            {
+                ids.Add(targetId);
+            }
+
+            return ids;
         }
 
         return ExtractEntityIds(line);
+    }
+
+    private static uint ExtractPanelEntityId(string line, HashSet<uint> entityIds)
+    {
+        var type = GetLineType(line);
+        if (type == "14" || type == "17")
+        {
+            var casterId = ExtractCastCasterEntityId(line);
+            if (casterId != 0)
+            {
+                return casterId;
+            }
+        }
+
+        if (type == "1A")
+        {
+            var sourceId = ExtractStatusAddSourceEntityId(line);
+            if (sourceId != 0)
+            {
+                return sourceId;
+            }
+        }
+
+        var firstEntityId = ExtractFirstEntityId(line);
+        if (firstEntityId != 0)
+        {
+            return firstEntityId;
+        }
+
+        foreach (var entityId in entityIds)
+        {
+            return entityId;
+        }
+
+        return 0;
+    }
+
+    private static uint ExtractFirstEntityId(string line)
+    {
+        for (var i = 0; i <= line.Length - 8; i++)
+        {
+            if (!IsHexEntityIdStart(line[i]))
+            {
+                continue;
+            }
+
+            var token = line.Substring(i, 8);
+            if (!IsHex8(token))
+            {
+                continue;
+            }
+
+            if (uint.TryParse(token, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var id))
+            {
+                return id;
+            }
+        }
+
+        return 0;
     }
 
     private static HashSet<uint> ExtractEntityIds(string line)

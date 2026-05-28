@@ -69,7 +69,12 @@ public sealed class PluginMain : IActPluginV1
         var line = logInfo.logLine ?? string.Empty;
         _partyListTracker.ObserveLogLine(line);
         _actCastProgressStore.ObserveLogLine(line);
-        _entityActivityTracker.ObserveLogLine(line, _config.EntityActivityLifetimeSeconds);
+        _entityActivityTracker.ObserveLogLine(
+            line,
+            _config.EntityActivityLifetimeSeconds,
+            _config.PreserveShortLivedEntitiesAfterTerminal,
+            _config.ShortLivedEntityMaxAgeSeconds,
+            _config.ShortLivedEntityHoldSeconds);
         if (!_config.ShowRelatedActLogs)
         {
             return;
@@ -179,10 +184,25 @@ public sealed class PluginMain : IActPluginV1
                 _config.EntityActivityLifetimeSeconds = OverlayStyleService.Clamp(parsed, 1f, 120f);
             }
         });
+        var preserveShortLivedEntities = CreateCheckbox("短命实体删除/死亡后续显", _config.PreserveShortLivedEntitiesAfterTerminal, value => _config.PreserveShortLivedEntitiesAfterTerminal = value);
+        var shortLivedEntityMaxAgeInput = CreateTextInput("短命判定秒数 N", _config.ShortLivedEntityMaxAgeSeconds.ToString("0.0"), value =>
+        {
+            if (float.TryParse(value, out var parsed))
+            {
+                _config.ShortLivedEntityMaxAgeSeconds = OverlayStyleService.Clamp(parsed, 0.1f, 30f);
+            }
+        });
+        var shortLivedEntityHoldInput = CreateTextInput("短命后续显秒数 M", _config.ShortLivedEntityHoldSeconds.ToString("0.0"), value =>
+        {
+            if (float.TryParse(value, out var parsed))
+            {
+                _config.ShortLivedEntityHoldSeconds = OverlayStyleService.Clamp(parsed, 0.5f, 60f);
+            }
+        });
         var entityActivityLifetimeHint = new Label
         {
             AutoSize = true,
-            Text = "实体生命：开启后，新看到的实体先显示 N 秒；03/105 Add、14/15/16/1A/27、10F/110 坐标等 ACT 日志续期；死亡、HP=0、04/105 Remove 或超时会隐藏。此逻辑在日志类型显示过滤之前执行。",
+            Text = "实体生命：开启后，新看到的实体先显示活动续期秒数；03/105 Add、14/15/16/1A/27、10F/110 坐标等 ACT 日志续期；死亡、HP=0、04/105 Remove 或超时会隐藏。短命后续显开启后，若实体从出生/创建到删除/死亡小于 N 秒，会用最后一次实体快照继续显示 M 秒，方便回看瞬删机制物。此逻辑在日志类型显示过滤之前执行。",
         };
         var relatedLogPanelSecondsInput = CreateTextInput("右侧日志保留秒数", _config.RelatedActLogPanelSeconds.ToString("0.0"), value =>
         {
@@ -398,6 +418,9 @@ public sealed class PluginMain : IActPluginV1
         AddSection("实体生命周期");
         panel.Controls.Add(useActLogActivityLifetime);
         panel.Controls.Add(entityActivityLifetimeInput);
+        panel.Controls.Add(preserveShortLivedEntities);
+        panel.Controls.Add(shortLivedEntityMaxAgeInput);
+        panel.Controls.Add(shortLivedEntityHoldInput);
         panel.Controls.Add(entityActivityLifetimeHint);
 
         AddSection("ACT 日志采集与面板");

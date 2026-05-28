@@ -103,6 +103,10 @@ public sealed class TestOverlayForm : Form
         };
         _displayStateService.IsEntityActiveByActLog = entity =>
             !_config.UseActLogActivityLifetime || _entityActivityTracker.IsActive(entity);
+        _displayStateService.GetAdditionalEntitiesByActLog = entities =>
+            _config.UseActLogActivityLifetime && _config.PreserveShortLivedEntitiesAfterTerminal
+                ? _entityActivityTracker.GetPreservedEntities(entities)
+                : Array.Empty<EntitySnapshot>();
     }
 
     protected override CreateParams CreateParams
@@ -344,7 +348,7 @@ public sealed class TestOverlayForm : Form
                 DrawLabel(graphics, font, back, brush, textShadow, line, castBarBack, castBar, relatedLogText, state, point, _config.ShowCastBar, _config.ShowActCastProgressBar, GetActCastProgress(state), GetRelatedLogs(state));
             }
 
-            DrawRelatedLogPanel(graphics, font, textShadow, states);
+            DrawRelatedLogPanel(graphics, font, textShadow);
         }
     }
 
@@ -526,15 +530,14 @@ public sealed class TestOverlayForm : Form
         }
     }
 
-    private void DrawRelatedLogPanel(Graphics graphics, Font font, Brush textShadow, IReadOnlyList<EntityDisplayState> states)
+    private void DrawRelatedLogPanel(Graphics graphics, Font font, Brush textShadow)
     {
-        if (!_config.ShowRelatedActLogs || !_config.ShowRelatedActLogPanel || _relatedLogStore == null || states == null || states.Count == 0)
+        if (!_config.ShowRelatedActLogs || !_config.ShowRelatedActLogPanel || _relatedLogStore == null)
         {
             return;
         }
 
-        var entityIds = states.Select(state => state.Snapshot.EntityId).Where(id => id != 0).ToArray();
-        var entries = _relatedLogStore.GetRecentForEntities(entityIds, _config.RelatedActLogPanelSeconds, _config.RelatedActLogPanelMaxLines);
+        var entries = _relatedLogStore.GetRecentForPanel(_config.RelatedActLogPanelSeconds, _config.RelatedActLogPanelMaxLines);
         if (entries.Count == 0)
         {
             return;
@@ -552,13 +555,12 @@ public sealed class TestOverlayForm : Form
         var maxWidth = Math.Max(360f, Math.Min(900f, ClientSize.Width * 0.56f));
         var contentWidth = maxWidth - 14f;
         var wrappedLines = WrapPanelLines(graphics, lines, font, contentWidth);
-        var panelText = string.Join(Environment.NewLine, wrappedLines);
-        var size = graphics.MeasureString(panelText, font, (int)contentWidth);
+        var lineHeight = font.GetHeight(graphics) + 1f;
         var rect = new RectangleF(
             ClientSize.Width - maxWidth - 12f,
             72f,
             maxWidth,
-            Math.Min(ClientSize.Height - 84f, (float)Math.Ceiling(size.Height) + 12f));
+            RelatedActLogPanelLayout.CalculatePanelHeight(wrappedLines.Count, lineHeight, ClientSize.Height));
 
         using (var back = new SolidBrush(ToDrawingColor(OverlayStyleService.ParseHexColor(_config.Style.RelatedLogPanelBackgroundColor, 0.55f))))
         using (var border = new Pen(Color.FromArgb(110, 160, 240, 255), 1f))
