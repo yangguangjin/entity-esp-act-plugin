@@ -25,20 +25,23 @@ public sealed class TestOverlayForm : Form
     private readonly ActCastProgressStore? _actCastProgressStore;
     private readonly NetworkPartyListTailer? _partyListTailer;
     private readonly LiveVfxMonitorService? _liveVfxMonitor;
+    private readonly EntityActivityTracker? _entityActivityTracker;
     private readonly EspConfig _config;
     private IReadOnlyList<EntityDisplayState> _cachedStates = Array.Empty<EntityDisplayState>();
     private long _lastStateBuildTicks;
     private bool _isRendering;
 
-    public TestOverlayForm(EspConfig config, RelatedActLogStore? relatedLogStore = null, PartyListTracker? partyListTracker = null, ActCastProgressStore? actCastProgressStore = null, LiveVfxMonitorService? liveVfxMonitor = null)
+    public TestOverlayForm(EspConfig config, RelatedActLogStore? relatedLogStore = null, PartyListTracker? partyListTracker = null, ActCastProgressStore? actCastProgressStore = null, LiveVfxMonitorService? liveVfxMonitor = null, EntityActivityTracker? entityActivityTracker = null)
     {
         _config = config;
         _relatedLogStore = relatedLogStore;
         _partyListTracker = partyListTracker;
         _actCastProgressStore = actCastProgressStore;
         _liveVfxMonitor = liveVfxMonitor;
+        _entityActivityTracker = entityActivityTracker;
         _partyListTailer = partyListTracker == null ? null : new NetworkPartyListTailer(config.Paths, partyListTracker);
         _displayStateService = CreateDisplayStateService(config);
+        ConfigureEntityActivityGate();
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -82,6 +85,24 @@ public sealed class TestOverlayForm : Form
         }
 
         return new DisplayStateService(new MockEntitySource(), new MockCameraSource());
+    }
+
+    private void ConfigureEntityActivityGate()
+    {
+        if (_entityActivityTracker == null)
+        {
+            return;
+        }
+
+        _displayStateService.OnRawEntitiesUpdated = entities =>
+        {
+            if (_config.UseActLogActivityLifetime)
+            {
+                _entityActivityTracker.ObserveEntities(entities, _config.EntityActivityLifetimeSeconds);
+            }
+        };
+        _displayStateService.IsEntityActiveByActLog = entity =>
+            !_config.UseActLogActivityLifetime || _entityActivityTracker.IsActive(entity);
     }
 
     protected override CreateParams CreateParams

@@ -12,7 +12,8 @@ public static class EntityDisplayPipeline
         CameraSnapshot camera,
         EspConfig config,
         PartyContext party,
-        ISet<uint>? pinnedEntityIds = null)
+        ISet<uint>? pinnedEntityIds = null,
+        Func<EntitySnapshot, bool>? isEntityActiveByActLog = null)
     {
         pinnedEntityIds ??= new HashSet<uint>();
         var states = new List<EntityDisplayState>();
@@ -20,6 +21,14 @@ public static class EntityDisplayPipeline
         foreach (var entity in entities)
         {
             var filter = FilterService.Evaluate(entity, config, party);
+            if (filter.ShouldDisplay
+                && config.UseActLogActivityLifetime
+                && isEntityActiveByActLog != null
+                && !isEntityActiveByActLog(entity))
+            {
+                filter = FilterResult.Reject("act-inactive");
+            }
+
             var showFilteredDebug = !filter.ShouldDisplay && config.ShowFilteredEntitiesForDebug;
             if (!filter.ShouldDisplay && !showFilteredDebug)
             {

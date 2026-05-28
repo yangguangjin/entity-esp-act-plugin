@@ -31,6 +31,11 @@ public sealed class ConfigService
         {
             config.RecentVfxMaxLines = 12;
         }
+
+        if (config.EntityActivityLifetimeSeconds <= 0)
+        {
+            config.EntityActivityLifetimeSeconds = 15f;
+        }
     }
 
     private static void MigrateLegacyRelatedActLogFilters(string json, EspConfig config)

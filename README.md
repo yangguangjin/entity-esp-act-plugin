@@ -12,6 +12,7 @@ Entity ESP ACT Plugin 是一个用于 FF14 / ACT 的实体调试与 Overlay 插�
 - 实体 Overlay：在游戏窗口上显示实体标签、距离、BNpc、BNpcName、EObjName 等调试字段。
 - 读条观察：支持显示内存读条条形和 ACT 14 日志读条进度条。
 - ACT 日志关联：可采集并显示实体相关 ACT 日志，支持不同日志类型独立开关和简化显示。
+- 实体生命周期：可按 ACT 日志活动给实体标签续期，默认 15 秒无活动后自动隐藏，减少短命机制物残留。
 - 右侧日志面板：适合录屏分析，把近期实体相关日志固定显示在右侧。
 - VFX 监控面板：在左上角显示近期 VFX 路径，并支持复制 Triggernometry 复现片段。
 - 样式配置：支持背景块、文字、读条条形、锚点十字等颜色和透明度配置。
@@ -71,7 +72,7 @@ src/EntityEspActPlugin.Act/bin/Release/net48/EntityEspActPlugin.Act.dll
 
 ## 打包与发布
 
-版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.1` 对应 tag `v0.1.1`。
+版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.2` 对应 tag `v0.1.2`。
 
 本地生成可发布 zip：
 

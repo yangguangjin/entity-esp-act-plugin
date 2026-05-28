@@ -20,6 +20,8 @@ public sealed class DisplayStateService
     public RuntimeDiagnosticsSnapshot LastDiagnostics { get; private set; } = RuntimeDiagnosticsSnapshot.Empty;
     public IReadOnlyList<EntitySnapshot> LastRawEntities { get; private set; } = Array.Empty<EntitySnapshot>();
     public IReadOnlyCollection<uint> PartyEntityIds { get; set; } = Array.Empty<uint>();
+    public Action<IReadOnlyList<EntitySnapshot>>? OnRawEntitiesUpdated { get; set; }
+    public Func<EntitySnapshot, bool>? IsEntityActiveByActLog { get; set; }
 
     public IReadOnlyList<EntityDisplayState> BuildStates(int width, int height, EspConfig config)
     {
@@ -27,12 +29,14 @@ public sealed class DisplayStateService
         var camera = _cameraSource.GetCamera(width, height);
         var entities = _entitySource.GetEntities();
         LastRawEntities = entities.ToArray();
+        OnRawEntitiesUpdated?.Invoke(LastRawEntities);
         var party = BuildPartyContext(LastRawEntities, PartyEntityIds);
         var states = EntityDisplayPipeline.BuildVisibleStates(
             entities,
             camera,
             config,
-            party)
+            party,
+            isEntityActiveByActLog: IsEntityActiveByActLog)
             .ToArray();
         stopwatch.Stop();
 

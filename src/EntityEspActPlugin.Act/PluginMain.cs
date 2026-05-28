@@ -18,6 +18,7 @@ public sealed class PluginMain : IActPluginV1
     private readonly PartyListTracker _partyListTracker = new PartyListTracker();
     private readonly ActCastProgressStore _actCastProgressStore = new ActCastProgressStore();
     private readonly LiveVfxMonitorService _liveVfxMonitor = new LiveVfxMonitorService();
+    private readonly EntityActivityTracker _entityActivityTracker = new EntityActivityTracker();
 
     private Label? _statusText;
     private TabPage? _pluginScreenSpace;
@@ -68,6 +69,7 @@ public sealed class PluginMain : IActPluginV1
         var line = logInfo.logLine ?? string.Empty;
         _partyListTracker.ObserveLogLine(line);
         _actCastProgressStore.ObserveLogLine(line);
+        _entityActivityTracker.ObserveLogLine(line, _config.EntityActivityLifetimeSeconds);
         if (!_config.ShowRelatedActLogs)
         {
             return;
@@ -167,6 +169,19 @@ public sealed class PluginMain : IActPluginV1
         var showRelatedLogs = CreateCheckbox("启用实体相关 ACT 日志采集", _config.ShowRelatedActLogs, value => _config.ShowRelatedActLogs = value);
         var showRelatedLogsNearEntity = CreateCheckbox("实体旁显示 ACT 日志", _config.ShowRelatedActLogsNearEntity, value => _config.ShowRelatedActLogsNearEntity = value);
         var showRelatedLogPanel = CreateCheckbox("右侧固定日志面板(录屏分析)", _config.ShowRelatedActLogPanel, value => _config.ShowRelatedActLogPanel = value);
+        var useActLogActivityLifetime = CreateCheckbox("按 ACT 日志活动隐藏静止实体", _config.UseActLogActivityLifetime, value => _config.UseActLogActivityLifetime = value);
+        var entityActivityLifetimeInput = CreateTextInput("实体 ACT 活动续期秒数", _config.EntityActivityLifetimeSeconds.ToString("0.0"), value =>
+        {
+            if (float.TryParse(value, out var parsed))
+            {
+                _config.EntityActivityLifetimeSeconds = OverlayStyleService.Clamp(parsed, 1f, 120f);
+            }
+        });
+        var entityActivityLifetimeHint = new Label
+        {
+            AutoSize = true,
+            Text = "实体生命：开启后，新看到的实体先显示 N 秒；03/105 Add、14/15/16/1A/27、10F/110 坐标等 ACT 日志续期；死亡、HP=0、04/105 Remove 或超时会隐藏。此逻辑在日志类型显示过滤之前执行。",
+        };
         var relatedLogPanelSecondsInput = CreateTextInput("右侧日志保留秒数", _config.RelatedActLogPanelSeconds.ToString("0.0"), value =>
         {
             if (float.TryParse(value, out var parsed))
@@ -371,6 +386,9 @@ public sealed class PluginMain : IActPluginV1
         panel.Controls.Add(showRelatedLogs);
         panel.Controls.Add(showRelatedLogsNearEntity);
         panel.Controls.Add(showRelatedLogPanel);
+        panel.Controls.Add(useActLogActivityLifetime);
+        panel.Controls.Add(entityActivityLifetimeInput);
+        panel.Controls.Add(entityActivityLifetimeHint);
         panel.Controls.Add(relatedLogPanelSecondsInput);
         panel.Controls.Add(relatedLogPanelMaxLinesInput);
         panel.Controls.Add(filterPlayerAndPartyLog14);
@@ -572,7 +590,7 @@ public sealed class PluginMain : IActPluginV1
 
     private void ShowTestOverlay()
     {
-        _testOverlay = new TestOverlayForm(_config, _relatedLogStore, _partyListTracker, _actCastProgressStore, _liveVfxMonitor);
+        _testOverlay = new TestOverlayForm(_config, _relatedLogStore, _partyListTracker, _actCastProgressStore, _liveVfxMonitor, _entityActivityTracker);
         _testOverlay.Show();
         SetStatus("Entity ESP test overlay shown");
     }

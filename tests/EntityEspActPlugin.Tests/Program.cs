@@ -35,6 +35,11 @@ var tests = new List<(string Name, Action Body)>
     ("DisplayStateService can show filtered entities for debugging", DisplayStateServiceCanShowFilteredEntitiesForDebugging),
     ("DisplayStateService records runtime diagnostics", DisplayStateServiceRecordsRuntimeDiagnostics),
     ("DisplayStateService keeps raw entities for log context", DisplayStateServiceKeepsRawEntitiesForLogContext),
+    ("Entity activity tracker defaults and expires idle entities", EntityActivityTrackerDefaultsAndExpiresIdleEntities),
+    ("Entity activity tracker renews and removes from ACT logs", EntityActivityTrackerRenewsAndRemovesFromActLogs),
+    ("Entity activity tracker expires deaths and zero HP only for target", EntityActivityTrackerExpiresDeathsAndZeroHpOnlyForTarget),
+    ("Entity activity tracker runs before related log filters", EntityActivityTrackerRunsBeforeRelatedLogFilters),
+    ("DisplayStateService gates inactive ACT log entities", DisplayStateServiceGatesInactiveActLogEntities),
     ("Real data sources fail safely when game process is unavailable", RealDataSourcesFailSafelyUntilSignaturesAreConfigured),
     ("Real data sources expose built-in signature diagnostics", RealDataSourcesExposeBuiltInSignatureDiagnostics),
     ("Diagnostics report includes runtime diagnostics", DiagnosticsReportIncludesRuntimeDiagnostics),
@@ -632,6 +637,177 @@ static void DisplayStateServiceKeepsRawEntitiesForLogContext()
     AssertTrue(context.PlayerOrOwnedEntityIds.Contains(0x100472EA), "raw self should remain available for log filtering");
 }
 
+static void EntityActivityTrackerDefaultsAndExpiresIdleEntities()
+{
+    var now = new DateTime(2026, 5, 28, 12, 0, 0, DateTimeKind.Utc);
+    var tracker = new EntityActivityTracker(() => now);
+    var entity = new EntitySnapshot { EntityId = 0x40002BCA };
+
+    tracker.ObserveEntities(new[] { entity }, 15);
+    AssertTrue(tracker.IsActive(entity), "newly observed entity should get default lifetime");
+
+    now = now.AddSeconds(14.9);
+    AssertTrue(tracker.IsActive(entity), "entity should remain active inside lifetime");
+
+    now = now.AddSeconds(0.2);
+    AssertFalse(tracker.IsActive(entity), "idle entity should expire after lifetime");
+
+    tracker.ObserveEntities(new[] { entity }, 15);
+    AssertFalse(tracker.IsActive(entity), "seeing the same still-present entity should not renew without ACT activity");
+}
+
+static void EntityActivityTrackerRenewsAndRemovesFromActLogs()
+{
+    var now = new DateTime(2026, 5, 28, 12, 0, 0, DateTimeKind.Utc);
+    var tracker = new EntityActivityTracker(() => now);
+    var entity = new EntitySnapshot { EntityId = 0x40002BCA };
+    tracker.ObserveEntities(new[] { entity }, 15);
+
+    now = now.AddSeconds(16);
+    AssertFalse(tracker.IsActive(entity), "entity should be inactive before a later ACT change");
+
+    tracker.ObserveLogLine("[22:15:20.000] 27:40002BCA:Boss:188300:180000", 15);
+    AssertTrue(tracker.IsActive(entity), "HP update should renew entity lifetime");
+
+    now = now.AddSeconds(14.5);
+    AssertTrue(tracker.IsActive(entity), "renewed entity should remain active before renewed lifetime ends");
+
+    now = now.AddSeconds(1);
+    AssertFalse(tracker.IsActive(entity), "renewed entity should expire when no more ACT changes arrive");
+
+    tracker.ObserveLogLine("[22:15:40.000] 10F:40002BCA:Boss:72.0000:357.5001:48.0000", 15);
+    AssertTrue(tracker.IsActive(entity), "position update should renew entity lifetime");
+
+    tracker.ObserveLogLine("[22:18:09.261] 261 105:Remove:40002BCA", 15);
+    AssertFalse(tracker.IsActive(entity), "Remove log should hide entity immediately");
+
+    AssertEqual("105", RelatedActLogStore.GetLineType("[22:15:13.762] 261 105:Add:40002BCA:BNpcID:4851"), "activity parser should find 105 type after ACT prefix");
+    var ids = EntityActivityTracker.ExtractActivityEntityIds("[22:15:13.762] 261 105:Add:40002BCA:BNpcID:4851:CastTargetID:E0000000:PosX:72.0000");
+    AssertTrue(ids.Contains(0x40002BCA), "activity parser should keep real entity id");
+    AssertFalse(ids.Contains(0xE0000000), "activity parser should ignore no-target sentinel id");
+
+    AssertEqual("27", EntityActivityTracker.GetActivityLineType("39|2026-05-28T22:15:20.0000000+08:00|40002BCA|Boss|188300|180000|checksum"), "network decimal 39 should map to hex 27");
+    tracker.ObserveLogLine("39|2026-05-28T22:15:20.0000000+08:00|40002BCA|Boss|188300|180000|checksum", 15);
+    AssertTrue(tracker.IsActive(entity), "network HP update should renew entity lifetime");
+
+    now = now.AddSeconds(16);
+    AssertFalse(tracker.IsActive(entity), "network-renewed entity should expire without more activity");
+
+    AssertEqual("10F", EntityActivityTracker.GetActivityLineType("271|2026-05-28T22:15:40.0000000+08:00|40002BCA|1.6596|0|0|72.0000|357.5001|48.0000|checksum"), "network decimal 271 should map to hex 10F");
+    tracker.ObserveLogLine("271|2026-05-28T22:15:40.0000000+08:00|40002BCA|1.6596|0|0|72.0000|357.5001|48.0000|checksum", 15);
+    AssertTrue(tracker.IsActive(entity), "network ActorSetPos should renew entity lifetime");
+
+    tracker.ObserveLogLine("261|2026-05-28T22:18:09.2610000+08:00|Remove|40002BCA|checksum", 15);
+    AssertFalse(tracker.IsActive(entity), "network CombatantMemory Remove should hide entity immediately");
+}
+
+static void EntityActivityTrackerExpiresDeathsAndZeroHpOnlyForTarget()
+{
+    var now = new DateTime(2026, 5, 28, 12, 0, 0, DateTimeKind.Utc);
+    var tracker = new EntityActivityTracker(() => now);
+    const uint targetId = 0x40002BCA;
+    const uint killerId = 0x4000C0DE;
+    const uint ownerId = 0x4000D00D;
+
+    tracker.ObserveEntities(new[]
+    {
+        new EntitySnapshot { EntityId = targetId },
+        new EntitySnapshot { EntityId = killerId },
+        new EntitySnapshot { EntityId = ownerId },
+    }, 15);
+
+    tracker.ObserveLogLine("[22:18:01.000] 19:40002BCA:Boss:4000C0DE:Killer", 15);
+    AssertFalse(tracker.IsActive(targetId), "19 death should hide dead target immediately");
+    AssertTrue(tracker.IsActive(killerId), "19 death should not hide killer/source entity");
+
+    tracker.ObserveLogLine("[22:18:02.000] 27:40002BCA:Boss:100:1000", 15);
+    AssertTrue(tracker.IsActive(targetId), "positive HP update should renew previously dead entity if it reappears");
+    tracker.ObserveLogLine("[22:18:03.000] 27:40002BCA:Boss:0:1000", 15);
+    AssertFalse(tracker.IsActive(targetId), "27 HP=0 should hide entity immediately");
+
+    tracker.ObserveLogLine("[22:18:04.000] 105:Change:40002BCA:CurrentHP:100:OwnerID:4000D00D:PosX:72.0000", 15);
+    AssertTrue(tracker.IsActive(targetId), "105 positive CurrentHP should renew entity");
+    AssertTrue(tracker.IsActive(ownerId), "105 change should renew owner while entity is alive");
+    tracker.ObserveLogLine("[22:18:05.000] 105:Change:40002BCA:CurrentHP:0:OwnerID:4000D00D:PosX:72.0000", 15);
+    AssertFalse(tracker.IsActive(targetId), "105 CurrentHP=0 should hide changed entity immediately");
+    AssertTrue(tracker.IsActive(ownerId), "105 CurrentHP=0 should not hide owner id from the same line");
+
+    tracker.ObserveLogLine("[22:18:06.000] 04:40002BCA:Boss:0:100:4000D00D:0:0:0:0:0:0:0:0:72:357:48:0", 15);
+    AssertFalse(tracker.IsActive(targetId), "04 RemoveCombatant should hide removed entity immediately");
+    AssertTrue(tracker.IsActive(ownerId), "04 RemoveCombatant should not hide owner id from the same line");
+
+    tracker.ObserveLogLine("25|2026-05-28T22:18:07.0000000+08:00|40002BCA|Boss|4000C0DE|Killer|checksum", 15);
+    AssertFalse(tracker.IsActive(targetId), "network decimal 25 death should hide target immediately");
+    AssertTrue(tracker.IsActive(killerId), "network death should not hide killer/source entity");
+
+    tracker.ObserveLogLine("39|2026-05-28T22:18:08.0000000+08:00|40002BCA|Boss|0|1000|checksum", 15);
+    AssertFalse(tracker.IsActive(targetId), "network HP=0 should hide entity immediately");
+
+    tracker.ObserveLogLine("261|2026-05-28T22:18:09.0000000+08:00|Change|40002BCA|CurrentHP|0|OwnerID|4000D00D|checksum", 15);
+    AssertFalse(tracker.IsActive(targetId), "network 105 CurrentHP=0 should hide entity immediately");
+    AssertTrue(tracker.IsActive(ownerId), "network 105 CurrentHP=0 should not hide owner id");
+}
+
+static void EntityActivityTrackerRunsBeforeRelatedLogFilters()
+{
+    var now = new DateTime(2026, 5, 28, 12, 0, 0, DateTimeKind.Utc);
+    var tracker = new EntityActivityTracker(() => now);
+    var relatedStore = new RelatedActLogStore(() => now);
+    var filters = new RelatedActLogFilterConfig
+    {
+        Log27 = false,
+        Log105 = false,
+        Log10F = false,
+    };
+
+    var hpLine = "[22:15:20.000] 27:40002BCA:Boss:188300:180000";
+    relatedStore.AddLine(hpLine, filters);
+    AssertEqual(0, relatedStore.GetRecent(0x40002BCA, 30, 10).Count, "related log filter should reject HP text display");
+
+    tracker.ObserveLogLine(hpLine, 15);
+    AssertTrue(tracker.IsActive(0x40002BCA), "activity tracker should still renew from filtered HP log");
+
+    now = now.AddSeconds(16);
+    AssertFalse(tracker.IsActive(0x40002BCA), "filtered HP renewal should still expire normally");
+
+    var posLine = "[22:15:40.000] 261 105:Change:40002BCA:CurrentHP:180000:PosX:72.0000:PosY:357.5001:PosZ:48.0000";
+    relatedStore.AddLine(posLine, filters);
+    AssertEqual(0, relatedStore.GetRecent(0x40002BCA, 30, 10).Count, "related log filter should reject 105 position text display");
+
+    tracker.ObserveLogLine(posLine, 15);
+    AssertTrue(tracker.IsActive(0x40002BCA), "activity tracker should still renew from filtered 105 position log");
+}
+
+static void DisplayStateServiceGatesInactiveActLogEntities()
+{
+    var now = new DateTime(2026, 5, 28, 12, 0, 0, DateTimeKind.Utc);
+    var tracker = new EntityActivityTracker(() => now);
+    var entity = new EntitySnapshot
+    {
+        EntityId = 0x40001234,
+        Kind = EntityKind.BattleNpc,
+        Position = new Vector3(0f, -1.8f, 0f),
+        DistanceToPlayer = 5f,
+        IsVisible = true,
+        IsTargetable = true,
+    };
+    var service = new DisplayStateService(new StaticEntitySource(new[] { entity }), new MockCameraSource());
+    service.OnRawEntitiesUpdated = entities => tracker.ObserveEntities(entities, 15);
+    service.IsEntityActiveByActLog = tracker.IsActive;
+    var config = new EspConfig { UseActLogActivityLifetime = true, EntityActivityLifetimeSeconds = 15f };
+
+    var firstStates = service.BuildStates(1000, 800, config);
+    AssertEqual(1, firstStates.Count, "entity should display during default activity lifetime");
+
+    now = now.AddSeconds(16);
+    var expiredStates = service.BuildStates(1000, 800, config);
+    AssertEqual(0, expiredStates.Count, "entity should be gated after ACT inactivity lifetime");
+
+    tracker.ObserveLogLine("[22:15:20.000] 105:Add:40001234:BNpcID:4851:PosX:72.0000:PosY:357.5001:PosZ:48.0000", 15);
+    var renewedStates = service.BuildStates(1000, 800, config);
+    AssertEqual(1, renewedStates.Count, "entity should display again after ACT activity renews it");
+}
+
 static void RealDataSourcesFailSafelyUntilSignaturesAreConfigured()
 {
     var service = new DisplayStateService(new RealEntitySource(), new RealCameraSource());
@@ -737,6 +913,8 @@ static void EspConfigExposesRenderAndScanControls()
     AssertEqual(100f, config.MaxDistance, "default max distance should follow current config");
     AssertEqual(45, config.EntityScanHz, "default scan hz");
     AssertEqual(90, config.RenderFps, "default render fps");
+    AssertFalse(config.UseActLogActivityLifetime, "ACT activity lifetime gate should be opt-in by default");
+    AssertEqual(15f, config.EntityActivityLifetimeSeconds, "default entity ACT activity lifetime seconds");
     AssertTrue(config.ShowCastBar, "cast bar should be enabled by default");
     AssertTrue(config.ShowUntargetable, "untargetable entities should be allowed by default");
     AssertTrue(config.ShowRelatedActLogs, "related ACT logs should be enabled by default");

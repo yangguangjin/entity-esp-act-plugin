@@ -17,6 +17,8 @@ public sealed class EspConfig
     public int MaxDisplayedEntities { get; set; } = 30;
     public int EntityScanHz { get; set; } = 45;
     public int RenderFps { get; set; } = 90;
+    public bool UseActLogActivityLifetime { get; set; }
+    public float EntityActivityLifetimeSeconds { get; set; } = 15f;
 
     public float FontSize { get; set; } = 15f;
     public float Opacity { get; set; } = 0.001f;
