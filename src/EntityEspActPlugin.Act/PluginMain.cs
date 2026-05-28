@@ -360,24 +360,27 @@ public sealed class PluginMain : IActPluginV1
         diagnosticsPanel.Controls.Add(diagnosticsHeader);
         splitContainer.Panel2.Controls.Add(diagnosticsPanel);
 
+        void AddSection(string title)
+        {
+            panel.Controls.Add(CreateSectionHeader(title));
+        }
+
+        AddSection("基础与数据源");
         panel.Controls.Add(enabled);
         panel.Controls.Add(dataSourceInput);
         panel.Controls.Add(signatureHint);
         panel.Controls.Add(authorContact);
-        panel.Controls.Add(showCastBar);
-        panel.Controls.Add(showActCastProgressBar);
-        panel.Controls.Add(showRecentVfxPanel);
-        panel.Controls.Add(recentVfxWindowInput);
-        panel.Controls.Add(recentVfxDisplayInput);
-        panel.Controls.Add(recentVfxMaxLinesInput);
-        panel.Controls.Add(copyTrnVfxSnippet);
-        panel.Controls.Add(new Label { AutoSize = true, Text = "VFX 提示：这些配置只控制面板保留/高亮/行数；扫描延迟取决于内存扫描耗时，已改为增量热点扫描。ActorVfx/Channeling 可用于快速复现，钢铁/月环/踩踏/点名 AOE 这类几何范围优先用 PictoACT Omen。" });
+
+        AddSection("实体显示与过滤");
         panel.Controls.Add(showUntargetable);
         panel.Controls.Add(filterSelf);
         panel.Controls.Add(filterParty);
         panel.Controls.Add(filterOwned);
         panel.Controls.Add(showFilteredDebug);
+        panel.Controls.Add(filterReasonHint);
         panel.Controls.Add(debugStyle);
+
+        AddSection("标签字段");
         panel.Controls.Add(showLabelEntityId);
         panel.Controls.Add(showLabelKind);
         panel.Controls.Add(showLabelDistance);
@@ -387,26 +390,48 @@ public sealed class PluginMain : IActPluginV1
         panel.Controls.Add(showLabelNameId);
         panel.Controls.Add(showLabelBNpcName);
         panel.Controls.Add(showLabelEObjNameId);
-        panel.Controls.Add(showRelatedLogs);
-        panel.Controls.Add(showRelatedLogsNearEntity);
-        panel.Controls.Add(showRelatedLogPanel);
+
+        AddSection("读条显示");
+        panel.Controls.Add(showCastBar);
+        panel.Controls.Add(showActCastProgressBar);
+
+        AddSection("实体生命周期");
         panel.Controls.Add(useActLogActivityLifetime);
         panel.Controls.Add(entityActivityLifetimeInput);
         panel.Controls.Add(entityActivityLifetimeHint);
+
+        AddSection("ACT 日志采集与面板");
+        panel.Controls.Add(showRelatedLogs);
+        panel.Controls.Add(showRelatedLogsNearEntity);
+        panel.Controls.Add(showRelatedLogPanel);
         panel.Controls.Add(relatedLogPanelSecondsInput);
         panel.Controls.Add(relatedLogPanelMaxLinesInput);
         panel.Controls.Add(filterPlayerAndPartyLog14);
         panel.Controls.Add(filterPlayerAndPartyLog1A);
         panel.Controls.Add(relatedLogSecondsInput);
         panel.Controls.Add(relatedLogMaxLinesInput);
+
+        AddSection("ACT 日志类型与简化显示");
         foreach (var relatedLogControl in relatedLogControls)
         {
             panel.Controls.Add(relatedLogControl);
         }
+
+        AddSection("VFX 监控");
+        panel.Controls.Add(showRecentVfxPanel);
+        panel.Controls.Add(recentVfxWindowInput);
+        panel.Controls.Add(recentVfxDisplayInput);
+        panel.Controls.Add(recentVfxMaxLinesInput);
+        panel.Controls.Add(copyTrnVfxSnippet);
+        panel.Controls.Add(new Label { AutoSize = true, Text = "VFX 提示：这些配置只控制面板保留/高亮/行数；扫描延迟取决于内存扫描耗时，已改为增量热点扫描。ActorVfx/Channeling 可用于快速复现，钢铁/月环/踩踏/点名 AOE 这类几何范围优先用 PictoACT Omen。" });
+
+        AddSection("性能与数量限制");
         panel.Controls.Add(maxDistanceInput);
         panel.Controls.Add(maxDisplayedInput);
         panel.Controls.Add(scanHzInput);
         panel.Controls.Add(renderFpsInput);
+
+        AddSection("样式与颜色");
         panel.Controls.Add(opacityInput);
         panel.Controls.Add(fontSizeInput);
         panel.Controls.Add(textColorInput);
@@ -416,6 +441,8 @@ public sealed class PluginMain : IActPluginV1
         panel.Controls.Add(relatedLogPanelBackColorInput);
         panel.Controls.Add(markerColorInput);
         panel.Controls.Add(backgroundColorInput);
+
+        AddSection("黑名单与读条噪声过滤");
         panel.Controls.Add(listHint);
         panel.Controls.Add(entityIdBlacklistInput);
         panel.Controls.Add(bnpcBlacklistInput);
@@ -423,12 +450,13 @@ public sealed class PluginMain : IActPluginV1
         panel.Controls.Add(relatedLogCasterBlacklistInput);
         panel.Controls.Add(relatedLogCasterBNpcBlacklistInput);
         panel.Controls.Add(relatedLogCasterBNpcNameBlacklistInput);
+
+        AddSection("操作与诊断");
         panel.Controls.Add(resetDefaults);
         panel.Controls.Add(toggleOverlay);
         panel.Controls.Add(diagnostics);
         panel.Controls.Add(save);
         panel.Controls.Add(diagnosticsHint);
-        panel.Controls.Add(filterReasonHint);
         RefreshDiagnosticsWithoutCandidateScan();
         return splitContainer;
     }
@@ -609,6 +637,44 @@ public sealed class PluginMain : IActPluginV1
         _testOverlay.Close();
         _testOverlay = null;
         ShowTestOverlay();
+    }
+
+    private static Control CreateSectionHeader(string title)
+    {
+        var header = new TableLayoutPanel
+        {
+            AutoSize = false,
+            Width = 760,
+            Height = 30,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0, 12, 0, 4),
+            Padding = new Padding(0, 4, 0, 0),
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+
+        var label = new Label
+        {
+            AutoSize = true,
+            Text = "◆ " + title,
+            Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+            ForeColor = Color.FromArgb(45, 45, 45),
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 4, 8, 0),
+        };
+        var line = new Label
+        {
+            AutoSize = false,
+            BorderStyle = BorderStyle.Fixed3D,
+            Dock = DockStyle.Fill,
+            Height = 2,
+            Margin = new Padding(4, 13, 0, 0),
+        };
+
+        header.Controls.Add(label, 0, 0);
+        header.Controls.Add(line, 1, 0);
+        return header;
     }
 
     private static CheckBox CreateCheckbox(string text, bool initialValue, Action<bool> onChanged)
