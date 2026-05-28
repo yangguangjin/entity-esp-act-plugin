@@ -19,7 +19,9 @@ var tests = new List<(string Name, Action Body)>
     ("Pattern scanner resolves RIP-relative targets", PatternScannerResolvesRipRelativeTargets),
     ("PE section parser reads section table", PeSectionParserReadsSectionTable),
     ("RIP candidate scanner finds common prefixes", RipCandidateScannerFindsCommonPrefixes),
+    ("GameObject health reader extracts character HP", GameObjectHealthReaderExtractsCharacterHp),
     ("Renderer builds casting label and clamps progress", RendererBuildsCastingLabelAndProgress),
+    ("Renderer shows HP and position labels only when enabled", RendererShowsHpAndPositionLabelsOnlyWhenEnabled),
     ("Environment paths point to ACT and FF14 executables", EnvironmentPathsPointToExecutables),
     ("Environment paths detect current FF14 game version", EnvironmentPathsDetectCurrentFfxivGameVersion),
     ("Config service loads saved list values", ConfigServiceLoadsSavedListValues),
@@ -269,6 +271,29 @@ static void RipCandidateScannerFindsCommonPrefixes()
     AssertEqual(0, filtered.FilteredGroups, "filtered groups should honor refs range");
 }
 
+static void GameObjectHealthReaderExtractsCharacterHp()
+{
+    var bytes = new byte[0x1B4];
+    BitConverter.GetBytes(123456u).CopyTo(bytes, 0x1AC);
+    BitConverter.GetBytes(200000u).CopyTo(bytes, 0x1B0);
+
+    var battleNpcOk = GameObjectTableReader.TryReadCharacterHealth(bytes, EntityKind.BattleNpc, out var currentHp, out var maxHp);
+    AssertTrue(battleNpcOk, "battle npc should expose CharacterData health");
+    AssertEqual(123456u, currentHp, "current hp");
+    AssertEqual(200000u, maxHp, "max hp");
+
+    var playerOk = GameObjectTableReader.TryReadCharacterHealth(bytes, EntityKind.Player, out currentHp, out maxHp);
+    AssertTrue(playerOk, "player should expose CharacterData health");
+
+    var eventObjOk = GameObjectTableReader.TryReadCharacterHealth(bytes, EntityKind.EventObj, out currentHp, out maxHp);
+    AssertFalse(eventObjOk, "event objects should not be interpreted as characters with HP");
+    AssertEqual(0u, currentHp, "event object current hp should reset");
+    AssertEqual(0u, maxHp, "event object max hp should reset");
+
+    var shortOk = GameObjectTableReader.TryReadCharacterHealth(new byte[0x1A0], EntityKind.BattleNpc, out currentHp, out maxHp);
+    AssertFalse(shortOk, "short base GameObject bytes should not expose CharacterData health");
+}
+
 static void RendererBuildsCastingLabelAndProgress()
 {
     var entity = new EntitySnapshot
@@ -307,6 +332,38 @@ static void RendererBuildsCastingLabelAndProgress()
 
     AssertNear(1f, state.CastProgress, "cast progress should clamp to 1");
     AssertTrue(state.Pinned, "state should be pinned");
+}
+
+static void RendererShowsHpAndPositionLabelsOnlyWhenEnabled()
+{
+    var entity = new EntitySnapshot
+    {
+        EntityId = 0x40001234,
+        Position = new Vector3(72f, 357.5f, 48.125f),
+        CurrentHp = 123456,
+        MaxHp = 200000,
+    };
+
+    var hiddenConfig = new EspConfig();
+    hiddenConfig.LabelFields.EntityId = false;
+    var hidden = DisplayStateBuilder.BuildLabel(entity, hiddenConfig);
+    AssertFalse(hidden.Contains("HP:"), "HP label should be hidden by default");
+    AssertFalse(hidden.Contains("Pos:"), "position label should be hidden by default");
+
+    var visibleConfig = new EspConfig();
+    visibleConfig.LabelFields.EntityId = false;
+    visibleConfig.LabelFields.Hp = true;
+    visibleConfig.LabelFields.Position = true;
+    var visible = DisplayStateBuilder.BuildLabel(entity, visibleConfig);
+    AssertTrue(visible.Contains("HP:123456/200000"), "HP label should include current and max HP when enabled");
+    AssertTrue(visible.Contains("61.7%"), "HP label should include percent when max HP is known");
+    AssertTrue(visible.Contains("Pos:72.00,357.50,48.13"), "position label should include memory x/y/z when enabled");
+
+    visibleConfig.LabelFields.Hp = false;
+    visibleConfig.LabelFields.Position = false;
+    var disabledAgain = DisplayStateBuilder.BuildLabel(entity, visibleConfig);
+    AssertFalse(disabledAgain.Contains("HP:"), "HP label should turn off when checkbox is disabled");
+    AssertFalse(disabledAgain.Contains("Pos:"), "position label should turn off when checkbox is disabled");
 }
 
 static void EnvironmentPathsPointToExecutables()
@@ -942,6 +999,8 @@ static void EspConfigExposesRenderAndScanControls()
     AssertTrue(config.LabelFields.EntityId, "entity id label should be enabled by default");
     AssertFalse(config.LabelFields.Kind, "kind label should follow current default");
     AssertFalse(config.LabelFields.Distance, "distance label should follow current default");
+    AssertFalse(config.LabelFields.Hp, "hp label should be hidden by default");
+    AssertFalse(config.LabelFields.Position, "position label should be hidden by default");
     AssertTrue(config.LabelFields.BNpcId, "bnpc id label should follow current default");
     AssertFalse(config.LabelFields.BNpcNameId, "name id label should follow current default");
     AssertFalse(config.LabelFields.BNpcName, "bnpc name label should follow current default");

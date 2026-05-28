@@ -29,6 +29,8 @@ public sealed class MockEntitySource : IEntitySource
             Position = new Vector3(x, y, 0f),
             HitboxRadius = 0.1f,
             DistanceToPlayer = 10f,
+            CurrentHp = 100000u + bnpcId,
+            MaxHp = 200000u + bnpcId,
             IsVisible = true,
             IsTargetable = true,
             IsPartyMember = isPartyMember,

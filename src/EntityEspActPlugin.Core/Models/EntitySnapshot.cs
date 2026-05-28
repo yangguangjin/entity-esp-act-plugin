@@ -20,6 +20,8 @@ public sealed class EntitySnapshot
     public float Heading { get; set; }
     public float HitboxRadius { get; set; }
     public float DistanceToPlayer { get; set; }
+    public uint CurrentHp { get; set; }
+    public uint MaxHp { get; set; }
 
     public bool IsTargetable { get; set; } = true;
     public bool IsVisible { get; set; } = true;

@@ -56,6 +56,33 @@ public static class DisplayStateBuilder
             parts.Add("Dist:" + entity.DistanceToPlayer.ToString("0.0", CultureInfo.InvariantCulture) + "m");
         }
 
+        if (fields.Hp)
+        {
+            if (entity.MaxHp > 0)
+            {
+                parts.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "HP:{0}/{1} ({2:0.0}%)",
+                    entity.CurrentHp,
+                    entity.MaxHp,
+                    entity.CurrentHp * 100.0 / entity.MaxHp));
+            }
+            else if (entity.CurrentHp > 0)
+            {
+                parts.Add("HP:" + entity.CurrentHp.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        if (fields.Position)
+        {
+            parts.Add(string.Format(
+                CultureInfo.InvariantCulture,
+                "Pos:{0:0.00},{1:0.00},{2:0.00}",
+                entity.Position.X,
+                entity.Position.Y,
+                entity.Position.Z));
+        }
+
         if (fields.BNpcId && entity.BNpcId != 0)
         {
             parts.Add("BNpcId:" + entity.BNpcId);

@@ -9,7 +9,7 @@ Entity ESP ACT Plugin 是一个用于 FF14 / ACT 的实体调试与 Overlay 插�
 
 ## 功能概览
 
-- 实体 Overlay：在游戏窗口上显示实体标签、距离、BNpc、BNpcName、EObjName 等调试字段。
+- 实体 Overlay：在游戏窗口上显示实体标签、距离、HP、坐标、BNpc、BNpcName、EObjName 等调试字段。
 - 读条观察：支持显示内存读条条形和 ACT 14 日志读条进度条。
 - ACT 日志关联：可采集并显示实体相关 ACT 日志，支持不同日志类型独立开关和简化显示。
 - 实体生命周期：可按 ACT 日志活动给实体标签续期，默认 15 秒无活动后自动隐藏，减少短命机制物残留。
@@ -72,7 +72,7 @@ src/EntityEspActPlugin.Act/bin/Release/net48/EntityEspActPlugin.Act.dll
 
 ## 打包与发布
 
-版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.2` 对应 tag `v0.1.2`。
+版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.3` 对应 tag `v0.1.3`。
 
 本地生成可发布 zip：
 
@@ -112,7 +112,7 @@ git push origin vX.Y.Z
 
 1. 在插件页面勾选 `启用 overlay`。
 2. `DataSource` 实战使用 `Real`，样式测试可使用 `Mock`。
-3. 按需要开启实体标签字段，例如 `EntityId`、`BNpcId`、`BNpcName`、距离。
+3. 按需要开启实体标签字段，例如 `EntityId`、HP、坐标、`BNpcId`、`BNpcName`、距离。
 4. 打本写触发器时，可开启实体旁 ACT 日志或右侧固定日志面板。
 5. 需要观察 VFX 时，开启 `启用 VFX 监控与左上角列表`，然后使用 `复制最近 VFX 的 TRN 复现片段`。
 

@@ -23,6 +23,9 @@ public sealed class GameObjectTableReader
     private const int PositionOffset = 0xB0;
     private const int RotationOffset = 0xC0;
     private const int HitboxRadiusOffset = 0xD0;
+    private const int CharacterDataOffset = GameObjectSize;
+    private const int CurrentHpOffset = CharacterDataOffset + 0x0C;
+    private const int MaxHpOffset = CharacterDataOffset + 0x10;
     private const int MaxSlots = 700;
 
     private readonly ProcessMemoryReader _memoryReader;
@@ -156,6 +159,12 @@ public sealed class GameObjectTableReader
         entity.Heading = BitConverter.ToSingle(bytes, RotationOffset);
         entity.HitboxRadius = BitConverter.ToSingle(bytes, HitboxRadiusOffset);
         entity.DistanceToPlayer = selfPosition.HasValue ? Vector3.Distance(selfPosition.Value, position) : 0f;
+        if (TryReadCharacterHealth(objectAddress, kind, out var currentHp, out var maxHp))
+        {
+            entity.CurrentHp = currentHp;
+            entity.MaxHp = maxHp;
+        }
+
         entity.IsSelf = objectIndex == 0;
         entity.IsTargetable = true;
         entity.IsVisible = true;
@@ -256,5 +265,67 @@ public sealed class GameObjectTableReader
     private static bool IsFinite(float value)
     {
         return !float.IsNaN(value) && !float.IsInfinity(value);
+    }
+
+    public static bool TryReadCharacterHealth(byte[] bytes, EntityKind kind, out uint currentHp, out uint maxHp)
+    {
+        currentHp = 0;
+        maxHp = 0;
+        if (!KindCanHaveHealth(kind) || bytes.Length < MaxHpOffset + sizeof(uint))
+        {
+            return false;
+        }
+
+        currentHp = BitConverter.ToUInt32(bytes, CurrentHpOffset);
+        maxHp = BitConverter.ToUInt32(bytes, MaxHpOffset);
+        if (currentHp == 0 && maxHp == 0)
+        {
+            return false;
+        }
+
+        if (maxHp > 0 && currentHp > maxHp)
+        {
+            currentHp = 0;
+            maxHp = 0;
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryReadCharacterHealth(long objectAddress, EntityKind kind, out uint currentHp, out uint maxHp)
+    {
+        currentHp = 0;
+        maxHp = 0;
+        if (!KindCanHaveHealth(kind))
+        {
+            return false;
+        }
+
+        if (!_memoryReader.TryReadBytes(objectAddress + CurrentHpOffset, sizeof(uint) * 2, out var bytes))
+        {
+            return false;
+        }
+
+        currentHp = BitConverter.ToUInt32(bytes, 0);
+        maxHp = BitConverter.ToUInt32(bytes, sizeof(uint));
+        if (currentHp == 0 && maxHp == 0)
+        {
+            return false;
+        }
+
+        if (maxHp > 0 && currentHp > maxHp)
+        {
+            currentHp = 0;
+            maxHp = 0;
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool KindCanHaveHealth(EntityKind kind)
+    {
+        return kind == EntityKind.Player || kind == EntityKind.BattleNpc || kind == EntityKind.EventNpc;
     }
 }

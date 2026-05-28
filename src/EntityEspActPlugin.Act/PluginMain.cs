@@ -160,6 +160,8 @@ public sealed class PluginMain : IActPluginV1
         var showLabelEntityId = CreateCheckbox("标签:EntityId", _config.LabelFields.EntityId, value => _config.LabelFields.EntityId = value);
         var showLabelKind = CreateCheckbox("标签:Kind", _config.LabelFields.Kind, value => _config.LabelFields.Kind = value);
         var showLabelDistance = CreateCheckbox("标签:距离", _config.LabelFields.Distance, value => _config.LabelFields.Distance = value);
+        var showLabelHp = CreateCheckbox("标签:HP", _config.LabelFields.Hp, value => _config.LabelFields.Hp = value);
+        var showLabelPosition = CreateCheckbox("标签:坐标", _config.LabelFields.Position, value => _config.LabelFields.Position = value);
         var showLabelBNpcId = CreateCheckbox("标签:BNpcId", _config.LabelFields.BNpcId, value => _config.LabelFields.BNpcId = value);
         var showLabelNameId = CreateCheckbox("标签:NameId", _config.LabelFields.BNpcNameId, value => _config.LabelFields.BNpcNameId = value);
         var showLabelBNpcName = CreateCheckbox("标签:BNpcName", _config.LabelFields.BNpcName, value => _config.LabelFields.BNpcName = value);
@@ -379,6 +381,8 @@ public sealed class PluginMain : IActPluginV1
         panel.Controls.Add(showLabelEntityId);
         panel.Controls.Add(showLabelKind);
         panel.Controls.Add(showLabelDistance);
+        panel.Controls.Add(showLabelHp);
+        panel.Controls.Add(showLabelPosition);
         panel.Controls.Add(showLabelBNpcId);
         panel.Controls.Add(showLabelNameId);
         panel.Controls.Add(showLabelBNpcName);
