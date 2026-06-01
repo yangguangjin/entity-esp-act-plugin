@@ -27,6 +27,25 @@ public sealed class EspConfig
     public float Opacity { get; set; } = 0.001f;
     public bool ShowCastBar { get; set; } = true;
     public bool ShowActCastProgressBar { get; set; } = true;
+    public bool ShowVfxMonitorPanel { get; set; }
+    public float VfxMaxDistance { get; set; } = 100f;
+    /// <summary>功能：active VFX 离开 Scene.World 后仍按日志式面板保留的默认秒数；默认 30 秒便于打本后回看。</summary>
+    public float VfxDisplaySeconds { get; set; } = 30f;
+    /// <summary>功能：active VFX 面板每次最多显示的实时/历史条数。</summary>
+    public int VfxMaxRows { get; set; } = 12;
+
+    /// <summary>功能：Scene.World active VFX 内存采样频率；与 RenderFps 解耦，避免按 UI 帧率执行重型内存遍历。</summary>
+    public int VfxSampleHz { get; set; } = 10;
+
+    /// <summary>功能：短命 active VFX 判定阈值 N；从首次到末次仍在 Scene.World 的时间小于等于该秒数时，可在普通显示窗口后续显。</summary>
+    public float VfxShortLivedMaxAgeSeconds { get; set; } = 2f;
+
+    /// <summary>功能：短命 active VFX 在普通显示窗口结束后的额外续显秒数 M；默认 15 秒用于看清一闪而过的效果，设置为 0 可关闭短命续显。</summary>
+    public float VfxShortLivedHoldSeconds { get; set; } = 15f;
+
+    public VfxAnchorMode VfxAnchorMode { get; set; } = VfxAnchorMode.Self;
+    public uint VfxAnchorEntityId { get; set; }
+    public bool VfxShowPathScanFallback { get; set; } = true;
     public bool ShowRecentVfxPanel { get; set; }
     public float RecentVfxWindowSeconds { get; set; } = 30f;
     public float RecentVfxDisplaySeconds { get; set; } = 12f;

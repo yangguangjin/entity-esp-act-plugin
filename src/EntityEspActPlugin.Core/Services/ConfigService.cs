@@ -20,6 +20,7 @@ public sealed class ConfigService
         var json = File.ReadAllText(path);
         var config = _serializer.Deserialize<EspConfig>(json) ?? new EspConfig();
         MigrateLegacyRelatedActLogFilters(json, config);
+        MigrateLegacyVfxMonitorSettings(json, config);
         ApplyMissingDefaults(config);
         config.Paths = EnvironmentPathResolver.Resolve(config.Paths);
         return config;
@@ -32,9 +33,53 @@ public sealed class ConfigService
             config.RecentVfxMaxLines = 12;
         }
 
+        if (config.VfxMaxRows <= 0)
+        {
+            config.VfxMaxRows = config.RecentVfxMaxLines > 0 ? config.RecentVfxMaxLines : 12;
+        }
+
+        if (config.VfxDisplaySeconds <= 0)
+        {
+            // 功能：旧配置缺失新 VFX 字段时，优先沿用旧窗口；否则使用当前更易回看的 30 秒默认保留。
+            config.VfxDisplaySeconds = config.RecentVfxWindowSeconds > 0 ? config.RecentVfxWindowSeconds : 30f;
+        }
+
+        if (config.VfxMaxDistance <= 0)
+        {
+            config.VfxMaxDistance = 100f;
+        }
+
+        if (config.VfxSampleHz <= 0)
+        {
+            // 功能：旧配置缺失采样频率时，使用较低默认值，避免按 RenderFps 重型采样。
+            config.VfxSampleHz = VfxSnapshotSampler.DefaultSampleHz;
+        }
+
         if (config.EntityActivityLifetimeSeconds <= 0)
         {
             config.EntityActivityLifetimeSeconds = 15f;
+        }
+    }
+
+    private static void MigrateLegacyVfxMonitorSettings(string json, EspConfig config)
+    {
+        if (json.Contains("\"ShowRecentVfxPanel\"") && !json.Contains("\"ShowVfxMonitorPanel\""))
+        {
+            config.ShowVfxMonitorPanel = config.ShowRecentVfxPanel;
+        }
+
+        if (json.Contains("\"RecentVfxWindowSeconds\"") && !json.Contains("\"VfxDisplaySeconds\""))
+        {
+            config.VfxDisplaySeconds = config.RecentVfxWindowSeconds;
+        }
+        else if (json.Contains("\"RecentVfxDisplaySeconds\"") && !json.Contains("\"VfxDisplaySeconds\""))
+        {
+            config.VfxDisplaySeconds = config.RecentVfxDisplaySeconds;
+        }
+
+        if (json.Contains("\"RecentVfxMaxLines\"") && !json.Contains("\"VfxMaxRows\""))
+        {
+            config.VfxMaxRows = config.RecentVfxMaxLines;
         }
     }
 

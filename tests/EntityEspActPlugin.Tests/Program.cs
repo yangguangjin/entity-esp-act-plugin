@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Text;
 using EntityEspActPlugin.Core.Models;
 using EntityEspActPlugin.Core.Services;
 
@@ -48,11 +49,26 @@ var tests = new List<(string Name, Action Body)>
     ("Real data sources expose built-in signature diagnostics", RealDataSourcesExposeBuiltInSignatureDiagnostics),
     ("Diagnostics report includes runtime diagnostics", DiagnosticsReportIncludesRuntimeDiagnostics),
     ("ESP config exposes render and scan controls", EspConfigExposesRenderAndScanControls),
+    ("ESP config exposes integrated VFX monitor controls", EspConfigExposesIntegratedVfxMonitorControls),
+    ("ESP config exposes VFX sample Hz throttle", EspConfigExposesVfxSampleHzThrottle),
+    ("Config service migrates legacy VFX monitor fields", ConfigServiceMigratesLegacyVfxMonitorFields),
+    ("Live VFX snapshot holds short-lived disappeared paths", LiveVfxSnapshotHoldsShortLivedDisappearedPaths),
+    ("Live VFX path extractor finds dot avfx extension", LiveVfxPathExtractorFindsDotAvfxExtension),
+    ("Active VFX display cache keeps vanished entries like logs", ActiveVfxDisplayCacheKeepsVanishedEntriesLikeLogs),
+    ("Active VFX display cache freezes observed distance like a log row", ActiveVfxDisplayCacheFreezesObservedDistanceLikeLogRow),
+    ("VFX monitor text formatter separates realtime and history sections", VfxMonitorTextFormatterSeparatesRealtimeAndHistorySections),
+    ("VFX monitor text formatter copies distinct paths", VfxMonitorTextFormatterCopiesDistinctPaths),
+    ("VFX vtable probe cache retries unknown classes", VfxVTableProbeCacheRetriesUnknownClasses),
+    ("Active VFX display cache extends short-lived vanished entries", ActiveVfxDisplayCacheExtendsShortLivedVanishedEntries),
+    ("VFX distance filter keeps nearby positioned entries", VfxDistanceFilterKeepsNearbyPositionedEntries),
+    ("VFX distance filter keeps path fallback without fake distance", VfxDistanceFilterKeepsPathFallbackWithoutFakeDistance),
+    ("VFX snapshot sampler queues work instead of blocking UI", VfxSnapshotSamplerQueuesWorkInsteadOfBlockingUi),
     ("ESP config defaults to low obstruction combat style", EspConfigDefaultsToLowObstructionCombatStyle),
     ("Overlay style parser applies color and opacity", OverlayStyleParserAppliesColorAndOpacity),
     ("Overlay text opacity stays readable when background opacity is low", OverlayTextOpacityStaysReadableWhenBackgroundOpacityIsLow),
     ("Related ACT log store keeps all recent entity lines", RelatedActLogStoreKeepsRecentEntityLines),
     ("Related ACT log store display windows are independent", RelatedActLogStoreDisplayWindowsAreIndependent),
+    ("Related ACT log store prunes stale cached rows", RelatedActLogStorePrunesStaleCachedRows),
     ("Related ACT log panel keeps logs without camera states", RelatedActLogPanelKeepsLogsWithoutCameraStates),
     ("Related ACT log panel keeps caster side of 14 lines", RelatedActLogPanelKeepsCasterSideOf14Lines),
     ("Related ACT log panel height keeps content rows", RelatedActLogPanelHeightKeepsContentRows),
@@ -1078,6 +1094,321 @@ static void EspConfigExposesRenderAndScanControls()
     AssertTrue(config.RelatedActLogCasterBNpcBlacklist.SequenceEqual(config.BNpcBlacklist), "caster bnpc blacklist should mirror current default");
 }
 
+static void EspConfigExposesIntegratedVfxMonitorControls()
+{
+    var config = new EspConfig();
+
+    AssertFalse(config.ShowVfxMonitorPanel, "integrated VFX panel should be off by default");
+    AssertEqual(100f, config.VfxMaxDistance, "default VFX max display distance");
+    AssertEqual(30f, config.VfxDisplaySeconds, "default VFX display seconds");
+    AssertEqual(12, config.VfxMaxRows, "default VFX max rows");
+    AssertEqual(2f, config.VfxShortLivedMaxAgeSeconds, "default short-lived VFX age threshold");
+    AssertEqual(15f, config.VfxShortLivedHoldSeconds, "default short-lived VFX hold seconds");
+    AssertEqual(VfxAnchorMode.Self, config.VfxAnchorMode, "default VFX anchor mode");
+    AssertTrue(config.VfxShowPathScanFallback, "path-scan fallback should remain available by default");
+}
+
+static void EspConfigExposesVfxSampleHzThrottle()
+{
+    var config = new EspConfig();
+
+    AssertEqual(10, config.VfxSampleHz, "default VFX memory sampling Hz should be lower than render FPS");
+    AssertTrue(config.VfxSampleHz < config.RenderFps, "VFX sampling should be decoupled from UI render FPS by default");
+}
+
+static void VfxSnapshotSamplerQueuesWorkInsteadOfBlockingUi()
+{
+    // 功能：验证 VFX 面板 UI 刷新只触发后台采样排队，不能在 UI tick 中直接执行重型内存遍历。
+    var now = new DateTime(2026, 5, 30, 10, 0, 0, DateTimeKind.Utc);
+    var queued = new Queue<Action>();
+    var sampleCalls = 0;
+    var sampled = new VfxMonitorSnapshot(
+        new[] { new VfxMonitorEntry { Path = "vfx/background-sample.avfx", Address = 0x1000, LastSeenAt = now } },
+        Array.Empty<VfxMonitorEntry>());
+    var sampler = new VfxSnapshotSampler(
+        _ =>
+        {
+            sampleCalls++;
+            return sampled;
+        },
+        action => queued.Enqueue(action),
+        () => now);
+
+    var first = sampler.GetLatest(new EspConfig { VfxSampleHz = 10 });
+
+    AssertEqual(0, first.LiveEntries.Count, "first UI read should return cached empty data before background work runs");
+    AssertEqual(0, sampleCalls, "sampler must not execute the heavy sample inline on the UI call");
+    AssertEqual(1, queued.Count, "first UI read should queue exactly one background sample");
+
+    var second = sampler.GetLatest(new EspConfig { VfxSampleHz = 10 });
+    AssertEqual(1, queued.Count, "a second UI tick while sampling is queued must not enqueue duplicate work");
+    AssertEqual(0, second.LiveEntries.Count, "cached value should remain unchanged until queued sample completes");
+
+    queued.Dequeue().Invoke();
+    var afterSample = sampler.GetLatest(new EspConfig { VfxSampleHz = 10 });
+
+    AssertEqual(1, sampleCalls, "queued background action should run the heavy sample once");
+    AssertEqual(1, afterSample.LiveEntries.Count, "completed background sample should become the cached snapshot");
+    AssertEqual("vfx/background-sample.avfx", afterSample.LiveEntries[0].Path, "cached VFX path");
+}
+
+static void ConfigServiceMigratesLegacyVfxMonitorFields()
+{
+    var root = Path.Combine(Path.GetTempPath(), "EntityEspLegacyVfxConfigTests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var path = Path.Combine(root, "EntityEspPlugin.json");
+    File.WriteAllText(path, "{\"ShowRecentVfxPanel\":true,\"RecentVfxWindowSeconds\":44,\"RecentVfxDisplaySeconds\":8,\"RecentVfxMaxLines\":7}");
+
+    var config = new ConfigService().Load(path);
+
+    AssertTrue(config.ShowVfxMonitorPanel, "legacy VFX panel switch should migrate to integrated switch");
+    AssertEqual(44f, config.VfxDisplaySeconds, "legacy VFX window seconds should migrate to display seconds");
+    AssertEqual(7, config.VfxMaxRows, "legacy VFX max lines should migrate to max rows");
+}
+
+static void LiveVfxSnapshotHoldsShortLivedDisappearedPaths()
+{
+    var firstSeen = new DateTime(2026, 5, 29, 6, 0, 0, DateTimeKind.Utc);
+    using var service = new LiveVfxMonitorService();
+
+    service.RecordPathObservation("vfx/short-lived.avfx", 0x1000, firstSeen, markAsNew: true);
+    service.RecordPathObservation("vfx/long-lived.avfx", 0x2000, firstSeen, markAsNew: true);
+    service.RecordPathObservation("vfx/long-lived.avfx", 0x2000, firstSeen.AddSeconds(5), markAsNew: true);
+
+    var snapshot = service.Snapshot(
+        windowSeconds: 1f,
+        displaySeconds: 1f,
+        maxEntries: 10,
+        shortLivedMaxAgeSeconds: 2f,
+        shortLivedHoldSeconds: 8f,
+        nowOverride: firstSeen.AddSeconds(7)).ToList();
+
+    var shortLived = snapshot.SingleOrDefault(entry => entry.Path == "vfx/short-lived.avfx");
+    AssertTrue(shortLived != null, "short-lived vanished VFX should remain visible during hold window");
+    if (shortLived == null)
+    {
+        throw new InvalidOperationException("short-lived VFX was unexpectedly missing after assertion");
+    }
+
+    AssertTrue(shortLived.IsHeldShortLived, "held short-lived VFX should be marked for display");
+    AssertFalse(snapshot.Any(entry => entry.Path == "vfx/long-lived.avfx"), "long-lived vanished VFX should not use short-lived hold");
+}
+
+static void LiveVfxPathExtractorFindsDotAvfxExtension()
+{
+    var bytes = Encoding.ASCII.GetBytes("before vfx/common/eff/test_case.avfx after");
+
+    var paths = LiveVfxMonitorService.ExtractAvfxPathCandidates(bytes).ToList();
+
+    AssertEqual(1, paths.Count, "one .avfx path should be extracted");
+    AssertEqual("vfx/common/eff/test_case.avfx", paths[0], "extracted .avfx path");
+}
+
+static void ActiveVfxDisplayCacheKeepsVanishedEntriesLikeLogs()
+{
+    var now = new DateTime(2026, 5, 29, 19, 30, 0, DateTimeKind.Utc);
+    var cache = new ActiveVfxDisplayCache();
+    var active = new VfxMonitorEntry
+    {
+        Path = "vfx/long-lived.avfx",
+        Address = 0x1000,
+        Source = VfxEntrySource.ActiveInstance,
+        FirstSeenAt = now,
+        LastSeenAt = now,
+        Position = Vector3.Zero,
+    };
+
+    cache.Update(new[] { active }, displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now);
+    active.LastSeenAt = now.AddSeconds(5);
+    cache.Update(new[] { active }, displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now.AddSeconds(5));
+
+    var recent = cache.Update(Array.Empty<VfxMonitorEntry>(), displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now.AddSeconds(14)).ToList();
+    AssertEqual(1, recent.Count, "vanished active VFX should remain visible inside default log-style window");
+    AssertFalse(recent[0].IsCurrentlyActive, "retained VFX should be marked inactive");
+    AssertFalse(recent[0].IsHeldShortLived, "long-lived VFX should not use short-lived hold inside normal window");
+
+    var expired = cache.Update(Array.Empty<VfxMonitorEntry>(), displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now.AddSeconds(16)).ToList();
+    AssertEqual(0, expired.Count, "long-lived vanished VFX should expire after default log-style window");
+}
+
+static void ActiveVfxDisplayCacheFreezesObservedDistanceLikeLogRow()
+{
+    // 功能：复现玩家移动后距离被当前帧重新计算，导致 VFX 记录不像日志而是被实时内存状态覆盖的问题。
+    var now = new DateTime(2026, 5, 29, 20, 10, 0, DateTimeKind.Utc);
+    var cache = new ActiveVfxDisplayCache();
+    var firstObservation = new VfxMonitorEntry
+    {
+        Path = "vfx/freeze-distance.avfx",
+        Address = 0x3000,
+        Source = VfxEntrySource.ActiveInstance,
+        FirstSeenAt = now,
+        LastSeenAt = now,
+        Position = new Vector3(30f, 0f, 0f),
+        Distance = 30f,
+    };
+    var closerAfterSelfMoved = firstObservation.Clone();
+    closerAfterSelfMoved.LastSeenAt = now.AddSeconds(3);
+    closerAfterSelfMoved.Distance = 5f;
+    closerAfterSelfMoved.Position = new Vector3(5f, 0f, 0f);
+
+    cache.Update(new[] { firstObservation }, displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now);
+    var displayRows = cache.Update(new[] { closerAfterSelfMoved }, displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now.AddSeconds(3)).ToList();
+
+    AssertEqual(1, displayRows.Count, "same active VFX address should keep one displayed log row");
+    AssertNear(30f, displayRows[0].Distance ?? -1f, "displayed VFX distance should stay at the first observed value");
+    AssertEqual(new Vector3(30f, 0f, 0f), displayRows[0].Position ?? Vector3.Zero, "displayed VFX position should stay at the first observed value");
+    AssertNearTime(now.AddSeconds(3), displayRows[0].LastSeenAt, "internal last-seen time should still refresh for retention");
+}
+
+static void VfxMonitorTextFormatterSeparatesRealtimeAndHistorySections()
+{
+    // 功能：验证 VFX 面板文本先显示当前实时存活区，再用明显分隔符显示历史日志区。
+    var now = new DateTime(2026, 5, 29, 20, 25, 0, DateTimeKind.Utc);
+    var live = new VfxMonitorEntry
+    {
+        Path = "vfx/live-now.avfx",
+        Address = 0x4000,
+        Source = VfxEntrySource.ActiveInstance,
+        FirstSeenAt = now.AddSeconds(-1),
+        LastSeenAt = now,
+        IsCurrentlyActive = true,
+        Position = new Vector3(5f, 0f, 0f),
+        Distance = 5f,
+    };
+    var history = new VfxMonitorEntry
+    {
+        Path = "vfx/history-first-seen.avfx",
+        Address = 0x5000,
+        Source = VfxEntrySource.ActiveInstance,
+        FirstSeenAt = now.AddSeconds(-18),
+        LastSeenAt = now.AddSeconds(-6),
+        IsCurrentlyActive = false,
+        Position = new Vector3(30f, 0f, 0f),
+        Distance = 30f,
+    };
+
+    var text = VfxMonitorTextFormatter.Format(new VfxMonitorSnapshot(new[] { live }, new[] { history }), now, "status-ok");
+    var liveHeaderIndex = text.IndexOf("========== 当前实时存活 VFX ==========");
+    var historyHeaderIndex = text.IndexOf("========== 历史 VFX 日志 ==========");
+
+    AssertTrue(liveHeaderIndex >= 0, "formatted text should contain realtime section separator");
+    AssertTrue(historyHeaderIndex > liveHeaderIndex, "history section should appear after realtime section");
+    AssertTrue(text.IndexOf("vfx/live-now.avfx", StringComparison.Ordinal) > liveHeaderIndex, "live path should be in realtime section");
+    AssertTrue(text.IndexOf("vfx/live-now.avfx", StringComparison.Ordinal) < historyHeaderIndex, "live path should appear before history separator");
+    AssertTrue(text.IndexOf("vfx/history-first-seen.avfx", StringComparison.Ordinal) > historyHeaderIndex, "history path should be in history section");
+    AssertTrue(text.Contains("REC "), "history section should keep REC state text");
+}
+
+static void VfxMonitorTextFormatterCopiesDistinctPaths()
+{
+    // 功能：验证复制路径列表会去重，并且优先输出当前实时区里的 path，便于直接粘贴到触发器资料。
+    var now = new DateTime(2026, 5, 29, 20, 35, 0, DateTimeKind.Utc);
+    var live = new VfxMonitorEntry { Path = "vfx/live-priority.avfx", Address = 0x5100, LastSeenAt = now };
+    var duplicateHistory = new VfxMonitorEntry { Path = "vfx/live-priority.avfx", Address = 0x5200, LastSeenAt = now.AddSeconds(-2) };
+    var history = new VfxMonitorEntry { Path = "vfx/history-only.avfx", Address = 0x5300, LastSeenAt = now.AddSeconds(-3) };
+
+    var paths = VfxMonitorTextFormatter.FormatDistinctPaths(new VfxMonitorSnapshot(new[] { live }, new[] { duplicateHistory, history }));
+    var lines = paths.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
+
+    AssertEqual(2, lines.Length, "distinct copied path count");
+    AssertEqual("vfx/live-priority.avfx", lines[0], "live path should keep first priority");
+    AssertEqual("vfx/history-only.avfx", lines[1], "history-only path should be copied after live paths");
+}
+
+static void VfxVTableProbeCacheRetriesUnknownClasses()
+{
+    // 功能：复现旧逻辑“发现一个 VFX vtable 后跳过所有未知 vtable”，确保副本中新 VFX 子类仍会被尝试解析。
+    var now = new DateTime(2026, 5, 29, 20, 45, 0, DateTimeKind.Utc);
+    var cache = new VfxObjectProbeCache();
+
+    cache.MarkProbeResult(0x1000, resolvedPath: true, now, rejectionTtlSeconds: 2f);
+    AssertTrue(cache.ShouldProbe(0x1000, now.AddSeconds(0.5)), "confirmed vtable should always be probed");
+    AssertTrue(cache.ShouldProbe(0x2000, now.AddSeconds(0.5)), "unknown vtable should still be probed even after one confirmed vtable exists");
+
+    cache.MarkProbeResult(0x2000, resolvedPath: false, now, rejectionTtlSeconds: 2f);
+    AssertFalse(cache.ShouldProbe(0x2000, now.AddSeconds(1)), "failed unknown vtable should be skipped only during short TTL");
+    AssertTrue(cache.ShouldProbe(0x2000, now.AddSeconds(3)), "failed unknown vtable should be retried after TTL so later-readable VFX is not lost");
+
+    cache.MarkProbeResult(0x2000, resolvedPath: true, now.AddSeconds(3), rejectionTtlSeconds: 2f);
+    AssertEqual(2, cache.ConfirmedCount, "newly resolved vtable should join confirmed VFX classes");
+    AssertEqual(0, cache.PruneAndCountRejected(now.AddSeconds(3)), "resolved vtable should be removed from rejected cache");
+}
+
+static void ActiveVfxDisplayCacheExtendsShortLivedVanishedEntries()
+{
+    var now = new DateTime(2026, 5, 29, 19, 40, 0, DateTimeKind.Utc);
+    var cache = new ActiveVfxDisplayCache();
+    var active = new VfxMonitorEntry
+    {
+        Path = "vfx/short-lived.avfx",
+        Address = 0x2000,
+        Source = VfxEntrySource.ActiveInstance,
+        FirstSeenAt = now,
+        LastSeenAt = now,
+        Position = new Vector3(1f, 0f, 1f),
+    };
+
+    cache.Update(new[] { active }, displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now);
+
+    var held = cache.Update(Array.Empty<VfxMonitorEntry>(), displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now.AddSeconds(11)).ToList();
+    AssertEqual(1, held.Count, "short-lived vanished VFX should remain visible after default window during hold extension");
+    AssertFalse(held[0].IsCurrentlyActive, "held short-lived VFX should not be marked active");
+    AssertTrue(held[0].IsHeldShortLived, "short-lived VFX should be marked as held after default window");
+
+    var expired = cache.Update(Array.Empty<VfxMonitorEntry>(), displaySeconds: 10f, shortLivedMaxAgeSeconds: 2f, shortLivedHoldSeconds: 8f, now: now.AddSeconds(19)).ToList();
+    AssertEqual(0, expired.Count, "short-lived hold should expire after default window plus hold seconds");
+}
+
+static void VfxDistanceFilterKeepsNearbyPositionedEntries()
+{
+    var now = new DateTime(2026, 5, 29, 3, 0, 0, DateTimeKind.Utc);
+    var entries = new[]
+    {
+        new VfxMonitorEntry
+        {
+            Path = "vfx/near.avfx",
+            Source = VfxEntrySource.ActiveInstance,
+            LastSeenAt = now,
+            Position = new Vector3(3f, 0f, 4f),
+        },
+        new VfxMonitorEntry
+        {
+            Path = "vfx/far.avfx",
+            Source = VfxEntrySource.ActiveInstance,
+            LastSeenAt = now,
+            Position = new Vector3(60f, 0f, 0f),
+        },
+    };
+    var anchor = new VfxAnchorContext(VfxAnchorMode.Self, Vector3.Zero);
+
+    var filtered = VfxDistanceFilter.Filter(entries, anchor, 10f, showFallbackWithoutPosition: true).ToList();
+
+    AssertEqual(1, filtered.Count, "only nearby VFX should remain");
+    AssertEqual("vfx/near.avfx", filtered[0].Path, "nearby VFX path");
+    AssertNear(5f, filtered[0].Distance ?? -1f, "nearby VFX distance");
+}
+
+static void VfxDistanceFilterKeepsPathFallbackWithoutFakeDistance()
+{
+    var now = new DateTime(2026, 5, 29, 3, 0, 0, DateTimeKind.Utc);
+    var entries = new[]
+    {
+        new VfxMonitorEntry
+        {
+            Path = "vfx/fallback.avfx",
+            Source = VfxEntrySource.PathScanFallback,
+            LastSeenAt = now,
+        },
+    };
+    var anchor = new VfxAnchorContext(VfxAnchorMode.Self, Vector3.Zero);
+
+    var filtered = VfxDistanceFilter.Filter(entries, anchor, 10f, showFallbackWithoutPosition: true).ToList();
+
+    AssertEqual(1, filtered.Count, "fallback path scan entries should still be visible when enabled");
+    AssertEqual("vfx/fallback.avfx", filtered[0].Path, "fallback path");
+    AssertTrue(!filtered[0].Distance.HasValue, "fallback entries must not fake distance");
+}
+
 static void EspConfigDefaultsToLowObstructionCombatStyle()
 {
     var config = new EspConfig();
@@ -1154,6 +1485,22 @@ static void RelatedActLogStoreDisplayWindowsAreIndependent()
     now = now.AddSeconds(7);
     AssertEqual(0, store.GetRecent(0x40009999, 6, 10).Count, "short near-entity window should not show expired line");
     AssertEqual(1, store.GetRecentForEntities(new[] { 0x40009999u }, 10, 10).Count, "long side-panel window should still show the same cached line");
+}
+
+static void RelatedActLogStorePrunesStaleCachedRows()
+{
+    // 功能：复现长时间打本后日志缓存无限增长，导致每帧面板查询越来越慢的问题。
+    var now = new DateTime(2026, 5, 24, 1, 30, 0, DateTimeKind.Utc);
+    var store = new RelatedActLogStore(() => now);
+    var filters = new RelatedActLogFilterConfig { Log14 = true };
+    store.AddLine("[01:30:00.000] 14:40001234:OldCaster:BEEF:40009999:OldTarget:3.0:0:0:0:0", filters);
+
+    now = now.AddSeconds(121);
+    store.AddLine("[01:32:01.000] 14:40005678:NewCaster:BEEF:4000AAAA:NewTarget:3.0:0:0:0:0", filters);
+
+    AssertEqual(0, store.GetRecent(0x40009999, 300, 10).Count, "stale per-entity rows older than the cache retention should be pruned");
+    AssertEqual(1, store.GetRecent(0x4000AAAA, 300, 10).Count, "fresh per-entity rows should remain after pruning");
+    AssertEqual(1, store.GetRecentForPanel(300, 10).Count, "panel cache should prune stale rows but keep the fresh row");
 }
 
 static void RelatedActLogPanelKeepsLogsWithoutCameraStates()

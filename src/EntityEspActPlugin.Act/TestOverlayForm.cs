@@ -24,20 +24,18 @@ public sealed class TestOverlayForm : Form
     private readonly PartyListTracker? _partyListTracker;
     private readonly ActCastProgressStore? _actCastProgressStore;
     private readonly NetworkPartyListTailer? _partyListTailer;
-    private readonly LiveVfxMonitorService? _liveVfxMonitor;
     private readonly EntityActivityTracker? _entityActivityTracker;
     private readonly EspConfig _config;
     private IReadOnlyList<EntityDisplayState> _cachedStates = Array.Empty<EntityDisplayState>();
     private long _lastStateBuildTicks;
     private bool _isRendering;
 
-    public TestOverlayForm(EspConfig config, RelatedActLogStore? relatedLogStore = null, PartyListTracker? partyListTracker = null, ActCastProgressStore? actCastProgressStore = null, LiveVfxMonitorService? liveVfxMonitor = null, EntityActivityTracker? entityActivityTracker = null)
+    public TestOverlayForm(EspConfig config, RelatedActLogStore? relatedLogStore = null, PartyListTracker? partyListTracker = null, ActCastProgressStore? actCastProgressStore = null, EntityActivityTracker? entityActivityTracker = null)
     {
         _config = config;
         _relatedLogStore = relatedLogStore;
         _partyListTracker = partyListTracker;
         _actCastProgressStore = actCastProgressStore;
-        _liveVfxMonitor = liveVfxMonitor;
         _entityActivityTracker = entityActivityTracker;
         _partyListTailer = partyListTracker == null ? null : new NetworkPartyListTailer(config.Paths, partyListTracker);
         _displayStateService = CreateDisplayStateService(config);
@@ -162,7 +160,6 @@ public sealed class TestOverlayForm : Form
                         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                         graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
                         DrawHeader(graphics);
-                        DrawRecentVfxPanel(graphics);
                         DrawDisplayStates(graphics);
                     }
                 }
@@ -247,62 +244,6 @@ public sealed class TestOverlayForm : Form
             graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
             graphics.DrawString(message, font, text, rect.X + 14f, rect.Y + 9f);
         }
-    }
-
-    private void DrawRecentVfxPanel(Graphics graphics)
-    {
-        if (!_config.ShowRecentVfxPanel)
-        {
-            return;
-        }
-
-        var entries = _liveVfxMonitor?.Snapshot(_config.RecentVfxWindowSeconds, _config.RecentVfxDisplaySeconds, Math.Max(1, _config.RecentVfxMaxLines)) ?? Array.Empty<LiveVfxEntry>();
-
-        using (var font = new Font("Microsoft YaHei UI", 11f, FontStyle.Regular, GraphicsUnit.Pixel))
-        using (var titleFont = new Font("Microsoft YaHei UI", 11f, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (var back = new SolidBrush(Color.FromArgb(82, 0, 0, 0)))
-        using (var border = new Pen(Color.FromArgb(90, 130, 255, 220), 1f))
-        using (var text = new SolidBrush(Color.FromArgb(230, 180, 255, 235)))
-        using (var title = new SolidBrush(Color.FromArgb(235, 235, 255, 210)))
-        using (var shadow = new SolidBrush(Color.FromArgb(120, 0, 0, 0)))
-        {
-            var now = DateTime.UtcNow;
-            var lines = entries.Count == 0
-                ? BuildEmptyRecentVfxLines(_liveVfxMonitor?.StatusText ?? "VFX monitor: stopped")
-                : entries
-                    .Select(entry => (entry.IsNew ? "NEW " : "LIVE ") + Math.Max(0, (int)Math.Ceiling((now - entry.LastSeenAt).TotalSeconds)).ToString("00") + "s " + entry.Path)
-                    .ToArray();
-            var header = "Live VFX keep " + Math.Max(1f, _config.RecentVfxWindowSeconds).ToString("0") + "s / NEW " + Math.Max(1f, _config.RecentVfxDisplaySeconds).ToString("0") + "s / max " + Math.Max(1, _config.RecentVfxMaxLines);
-            var contentWidth = graphics.MeasureString(header, titleFont).Width;
-            var lineHeight = graphics.MeasureString("X", font).Height;
-            foreach (var line in lines)
-            {
-                contentWidth = Math.Max(contentWidth, graphics.MeasureString(line, font).Width);
-            }
-
-            var maxWidth = Math.Min(ClientSize.Width * 0.42f, 760f);
-            var rect = new RectangleF(96f, 16f, Math.Min(contentWidth + 14f, maxWidth), 22f + lines.Length * lineHeight + 8f);
-            graphics.FillRectangle(back, rect);
-            graphics.DrawRectangle(border, rect.X, rect.Y, rect.Width, rect.Height);
-            DrawOutlinedText(graphics, header, titleFont, shadow, title, rect.X + 7f, rect.Y + 4f);
-
-            var y = rect.Y + 22f;
-            foreach (var line in lines)
-            {
-                var clipped = TrimToWidth(graphics, line, font, rect.Width - 14f);
-                DrawOutlinedText(graphics, clipped, font, shadow, text, rect.X + 7f, y);
-                y += lineHeight;
-            }
-        }
-    }
-
-    private static string[] BuildEmptyRecentVfxLines(string status)
-    {
-        return new[]
-        {
-            "no live .avfx yet",
-            status,
-        };
     }
 
     private void DrawDisplayStates(Graphics graphics)

@@ -73,6 +73,19 @@ public sealed class GameObjectTableReader
         return result;
     }
 
+    /// <summary>功能：读取 ObjectTable slot 0 的玩家当前位置，供 VFX/距离过滤等实时内存功能复用。</summary>
+    public bool TryReadSelfPosition(out Vector3 selfPosition)
+    {
+        selfPosition = default;
+        if (!_memoryReader.IsReady)
+        {
+            return false;
+        }
+
+        var tableBase = ResolveObjectTableAddress();
+        return tableBase != 0 && TryReadSelfPosition(tableBase, out selfPosition);
+    }
+
     private long ResolveObjectTableAddress()
     {
         var scan = ScanObjectTable();

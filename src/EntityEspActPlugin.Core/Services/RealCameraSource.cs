@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using EntityEspActPlugin.Core.Models;
 
@@ -28,7 +29,8 @@ public sealed class RealCameraSource : ICameraSource, IProcessMemoryDiagnosticSo
     {
         if (!_memoryReader.IsReady)
         {
-            _memoryReader.Refresh();
+            // 功能：相机源未就绪时按 1 秒节流重连，避免高 FPS overlay 每帧 OpenProcess。
+            _memoryReader.RefreshIfDue(TimeSpan.FromSeconds(1));
         }
 
         if (!_memoryReader.IsReady)

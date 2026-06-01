@@ -84,27 +84,111 @@ public sealed class LiveVfxMonitorService : IDisposable
         }
     }
 
-    public IReadOnlyList<LiveVfxEntry> Snapshot(float windowSeconds, float displaySeconds, int maxEntries = 14)
+    /// <summary>
+    /// 功能：记录一次 VFX 路径观察结果，供内存扫描线程和后续 active VFX 数据源复用。
+    /// </summary>
+    public void RecordPathObservation(string path, long address, DateTime observedAt, bool markAsNew)
     {
-        var now = DateTime.UtcNow;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        lock (_syncRoot)
+        {
+            UpsertPathObservationNoLock(path, address, observedAt, markAsNew);
+        }
+    }
+
+    /// <summary>
+    /// 功能：生成 VFX 面板快照；支持短存活路径在消失后按配置续显，降低扫描频率造成的漏显。
+    /// </summary>
+    public IReadOnlyList<LiveVfxEntry> Snapshot(
+        float windowSeconds,
+        float displaySeconds,
+        int maxEntries = 14,
+        float shortLivedMaxAgeSeconds = 0f,
+        float shortLivedHoldSeconds = 0f,
+        DateTime? nowOverride = null)
+    {
+        var now = nowOverride ?? DateTime.UtcNow;
         var keepSeconds = Math.Max(1f, Math.Max(windowSeconds, displaySeconds));
+        var effectiveDisplaySeconds = Math.Max(1f, displaySeconds);
+        var effectiveShortLivedMaxAgeSeconds = Math.Max(0f, shortLivedMaxAgeSeconds);
+        var effectiveShortLivedHoldSeconds = Math.Max(0f, shortLivedHoldSeconds);
         lock (_syncRoot)
         {
             return _entries.Values
-                .Where(entry => (now - entry.LastSeenAt).TotalSeconds <= keepSeconds)
-                .OrderByDescending(entry => entry.IsNew && (now - entry.FirstSeenAt).TotalSeconds <= displaySeconds)
+                .Select(entry => BuildSnapshotEntry(entry, now, keepSeconds, effectiveDisplaySeconds, effectiveShortLivedMaxAgeSeconds, effectiveShortLivedHoldSeconds))
+                .Where(entry => entry != null)
+                .Cast<LiveVfxEntry>()
+                .OrderByDescending(entry => entry.IsNew)
+                .ThenBy(entry => entry.IsHeldShortLived ? 1 : 0)
                 .ThenByDescending(entry => entry.LastSeenAt)
                 .Take(Math.Max(1, maxEntries))
-                .Select(entry => new LiveVfxEntry
-                {
-                    Path = entry.Path,
-                    Address = entry.Address,
-                    FirstSeenAt = entry.FirstSeenAt,
-                    LastSeenAt = entry.LastSeenAt,
-                    IsNew = entry.IsNew && (now - entry.FirstSeenAt).TotalSeconds <= displaySeconds,
-                })
                 .ToList();
         }
+    }
+
+    /// <summary>
+    /// 功能：把内部 entry 转成面板快照 entry，并决定是否因短存活规则进入 HOLD 状态。
+    /// </summary>
+    private static LiveVfxEntry? BuildSnapshotEntry(
+        LiveVfxEntry entry,
+        DateTime now,
+        float keepSeconds,
+        float displaySeconds,
+        float shortLivedMaxAgeSeconds,
+        float shortLivedHoldSeconds)
+    {
+        var ageSeconds = Math.Max(0, (now - entry.LastSeenAt).TotalSeconds);
+        var lifeSeconds = Math.Max(0, (entry.LastSeenAt - entry.FirstSeenAt).TotalSeconds);
+        var isWithinNormalWindow = ageSeconds <= keepSeconds;
+        var isHeldShortLived = !isWithinNormalWindow
+            && shortLivedMaxAgeSeconds > 0f
+            && shortLivedHoldSeconds > 0f
+            && lifeSeconds <= shortLivedMaxAgeSeconds
+            && ageSeconds <= shortLivedHoldSeconds;
+
+        if (!isWithinNormalWindow && !isHeldShortLived)
+        {
+            return null;
+        }
+
+        return new LiveVfxEntry
+        {
+            Path = entry.Path,
+            Address = entry.Address,
+            FirstSeenAt = entry.FirstSeenAt,
+            LastSeenAt = entry.LastSeenAt,
+            IsNew = !isHeldShortLived && entry.IsNew && (now - entry.FirstSeenAt).TotalSeconds <= displaySeconds,
+            IsHeldShortLived = isHeldShortLived,
+        };
+    }
+
+    /// <summary>
+    /// 功能：在已持有锁的情况下更新 VFX 路径生命周期，保留第一次出现时间并刷新最近观察时间。
+    /// </summary>
+    private void UpsertPathObservationNoLock(string path, long address, DateTime observedAt, bool markAsNew)
+    {
+        if (_entries.TryGetValue(path, out var existing))
+        {
+            existing.Address = address;
+            existing.LastSeenAt = observedAt;
+            existing.IsNew = existing.IsNew && (observedAt - existing.FirstSeenAt).TotalSeconds <= 12;
+            existing.IsHeldShortLived = false;
+            return;
+        }
+
+        _entries[path] = new LiveVfxEntry
+        {
+            Path = path,
+            Address = address,
+            FirstSeenAt = observedAt,
+            LastSeenAt = observedAt,
+            IsNew = markAsNew,
+            IsHeldShortLived = false,
+        };
     }
 
     public void Dispose()
@@ -164,23 +248,8 @@ public sealed class LiveVfxMonitorService : IDisposable
         {
             foreach (var item in current)
             {
-                if (_entries.TryGetValue(item.Key, out var existing))
-                {
-                    existing.Address = item.Value;
-                    existing.LastSeenAt = now;
-                    existing.IsNew = existing.IsNew && (now - existing.FirstSeenAt).TotalSeconds <= 12;
-                }
-                else
-                {
-                    _entries[item.Key] = new LiveVfxEntry
-                    {
-                        Path = item.Key,
-                        Address = item.Value,
-                        FirstSeenAt = now,
-                        LastSeenAt = now,
-                        IsNew = baselineDone,
-                    };
-                }
+                // 功能：把本轮扫描命中的 path 写入统一观察表，避免扫描路径和后续 active 数据源各写一套生命周期逻辑。
+                UpsertPathObservationNoLock(item.Key, item.Value, now, baselineDone);
             }
 
             foreach (var stale in _entries.Where(pair => (now - pair.Value.LastSeenAt).TotalSeconds > 300).Select(pair => pair.Key).ToList())
@@ -289,6 +358,22 @@ public sealed class LiveVfxMonitorService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 功能：从字节块中提取 VFX path 候选；公开给测试和 probe 复用，避免 .avfx 扩展名匹配再次写反。
+    /// </summary>
+    public static IReadOnlyList<string> ExtractAvfxPathCandidates(byte[] bytes)
+    {
+        if (bytes == null || bytes.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        return ExtractAvfxPaths(bytes, 0)
+            .Select(hit => hit.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private static IEnumerable<AvfxMemoryHit> ExtractAvfxPaths(byte[] bytes, long baseAddress)
     {
         for (var i = 0; i <= bytes.Length - 5; i++)
@@ -328,11 +413,11 @@ public sealed class LiveVfxMonitorService : IDisposable
 
     private static bool IsAvfxAt(byte[] bytes, int index)
     {
-        return (bytes[index] == (byte)'a' || bytes[index] == (byte)'A')
-            && (bytes[index + 1] == (byte)'v' || bytes[index + 1] == (byte)'V')
-            && (bytes[index + 2] == (byte)'f' || bytes[index + 2] == (byte)'F')
-            && (bytes[index + 3] == (byte)'x' || bytes[index + 3] == (byte)'X')
-            && bytes[index + 4] == (byte)'.';
+        return bytes[index] == (byte)'.'
+            && (bytes[index + 1] == (byte)'a' || bytes[index + 1] == (byte)'A')
+            && (bytes[index + 2] == (byte)'v' || bytes[index + 2] == (byte)'V')
+            && (bytes[index + 3] == (byte)'f' || bytes[index + 3] == (byte)'F')
+            && (bytes[index + 4] == (byte)'x' || bytes[index + 4] == (byte)'X');
     }
 
     private static bool IsPathByte(byte value)

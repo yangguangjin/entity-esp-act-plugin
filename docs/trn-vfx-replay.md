@@ -1,22 +1,16 @@
 # TRN VFX 快速复现与分类
 
-本文用于把 Entity ESP 监控到的 `.avfx` 路径快速复制到 Triggernometry / PostNamazuExtension 里复现。
+本文用于把 Entity ESP 监控到的 `.avfx` 路径手动填入 Triggernometry / PostNamazuExtension 里复现。
 
-## 插件按钮
+## 使用方式
 
-ACT 插件页新增：
+当前插件页已移除旧的 `复制最近 VFX 的 TRN 复现片段` 按钮。需要复现时：
 
-```text
-复制最近 VFX 的 TRN 复现片段
-```
-
-使用方式：
-
-1. 启动 ACT 和插件。
-2. 进入副本或触发机制，让左上角 Live VFX 列表出现 `.avfx`。
-3. 点击按钮。
-4. 插件会把最近一条 VFX 转成 TRN 可用片段复制到剪贴板。
-5. 到 Triggernometry 的 `添加新动作 -> 具名回调操作` 里粘贴测试。
+1. 在插件配置页开启 `显示 VFX 监控面板`。
+2. 进入副本或触发机制，让 VFX 面板出现 `.avfx` 路径。
+3. 手动复制面板里的完整 `.avfx` 路径。
+4. 按下方 ActorVfx / Channeling / PictoACT 示例填入 Triggernometry。
+5. `.avfx` 只用于复现客户端原生视觉；真正稳定的 AOE 范围仍优先用 `14/107/108` 日志坐标和 PictoACT 几何绘制。
 
 ## ActorVfx
 

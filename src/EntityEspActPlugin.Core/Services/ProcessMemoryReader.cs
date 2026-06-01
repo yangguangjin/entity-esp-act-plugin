@@ -17,6 +17,8 @@ public sealed class ProcessMemoryReader : IDisposable
     private const int PageGuard = 0x100;
 
     private IntPtr _handle = IntPtr.Zero;
+    /// <summary>功能：记录最近一次进程/模块刷新时间，用于避免未就绪或实时采样路径高频 OpenProcess。</summary>
+    private DateTime _lastRefreshAttemptUtc = DateTime.MinValue;
 
     public ProcessMemoryReader(string processName = "ffxiv_dx11")
     {
@@ -31,6 +33,7 @@ public sealed class ProcessMemoryReader : IDisposable
 
     public void Refresh()
     {
+        _lastRefreshAttemptUtc = DateTime.UtcNow;
         CloseHandleIfOpen();
         var status = new ProcessMemoryStatus();
         try
@@ -78,6 +81,20 @@ public sealed class ProcessMemoryReader : IDisposable
 
         Status = status;
         RefreshSections();
+    }
+
+    /// <summary>功能：按最小间隔刷新进程/模块句柄，返回本次是否真的执行 Refresh。</summary>
+    public bool RefreshIfDue(TimeSpan minInterval)
+    {
+        var safeInterval = minInterval <= TimeSpan.Zero ? TimeSpan.Zero : minInterval;
+        var now = DateTime.UtcNow;
+        if (_lastRefreshAttemptUtc != DateTime.MinValue && now - _lastRefreshAttemptUtc < safeInterval)
+        {
+            return false;
+        }
+
+        Refresh();
+        return true;
     }
 
     public IReadOnlyList<MemoryRegion> GetReadableMemoryRegions(long maxRegionSize = 64 * 1024 * 1024)

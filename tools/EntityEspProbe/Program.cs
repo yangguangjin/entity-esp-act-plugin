@@ -258,6 +258,13 @@ internal static class Program
             return 0;
         }
 
+        if (string.Equals(command, "probe-vfx-world", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine();
+            ProbeVfxWorldCommand(reader, args);
+            return 0;
+        }
+
         if (string.Equals(command, "probe-vfx-chain", StringComparison.OrdinalIgnoreCase))
         {
             Console.WriteLine();
@@ -318,6 +325,7 @@ internal static class Program
         Console.WriteLine("  read-target             Read current hard target via Control.TargetSystem");
         Console.WriteLine("  probe-character-vfx     Probe Character+VfxContainer slots from ObjectTable entities");
         Console.WriteLine("  probe-vfx-object        Scan candidate VfxObject structs and follow resource path pointers");
+        Console.WriteLine("  probe-vfx-world         Traverse Scene.World object graph and resolve active VfxObject paths");
         Console.WriteLine("  probe-vfx-chain <addr>  Reverse-probe references from a known .avfx string address");
         Console.WriteLine("  update-audit            Run post-patch checks for paths, signatures, offsets, entities, camera, VFX");
         Console.WriteLine("  build-states            Project visible display states with current real data");
@@ -1447,6 +1455,185 @@ internal static class Program
                 Console.WriteLine(indent + "  handleRef=0x" + handleRef.ToString("X") + " maybeVfxResourceUnk=0x" + (handleRef - 0x18).ToString("X"));
             }
         }
+    }
+
+    /// <summary>功能：验证 Scene.World active VFX graph 能否直接读出当前存活 VFX 实例。</summary>
+    private static void ProbeVfxWorldCommand(ProcessMemoryReader reader, string[] args)
+    {
+        var maxNodes = args.Length > 1 && int.TryParse(args[1], out var parsedNodes) ? Math.Max(1, parsedNodes) : 4000;
+        var maxPrinted = args.Length > 2 && int.TryParse(args[2], out var parsedPrinted) ? Math.Max(1, parsedPrinted) : 40;
+        Console.WriteLine("probe-vfx-world:");
+        Console.WriteLine("  goal: traverse Client::Graphics::Scene::World object graph and resolve active VfxObject paths without full memory scanning");
+        Console.WriteLine("  maxNodes=" + maxNodes + " maxPrinted=" + maxPrinted);
+        var scan = reader.ScanMainModule("SceneWorldInstance", "48 8B 05 ?? ?? ?? ?? 48 8B 50 40", 3, 7, ".text");
+        Console.WriteLine("  worldSig hits=" + scan.HitCount
+            + " first=0x" + scan.FirstHitAddress.ToString("X")
+            + " global=0x" + scan.ResolvedAddress.ToString("X")
+            + (string.IsNullOrWhiteSpace(scan.Error) ? string.Empty : " error=" + scan.Error));
+        if (scan.HitCount != 1 || scan.ResolvedAddress == 0)
+        {
+            Console.WriteLine("  result: cannot resolve Scene.World singleton; do not enable runtime direct VFX yet");
+            return;
+        }
+
+        if (!TryReadPointer(reader, scan.ResolvedAddress, out var worldAddress) || !LooksLikeUserModePointer(worldAddress))
+        {
+            Console.WriteLine("  result: world global pointer read failed or invalid");
+            return;
+        }
+
+        Console.WriteLine("  world=0x" + worldAddress.ToString("X") + " section=" + FindSectionName(reader, worldAddress));
+        DumpSceneWorldRoots(reader, worldAddress);
+        var roots = ReadSceneRootCandidates(reader, worldAddress);
+        if (roots.Count == 0)
+        {
+            Console.WriteLine("  result: no scene root pointers found");
+            return;
+        }
+
+        var results = TraverseSceneObjectGraph(reader, roots, maxNodes);
+        var withPath = results.Where(item => !string.IsNullOrWhiteSpace(item.Path)).ToList();
+        Console.WriteLine("  roots=" + roots.Count + " visited=" + results.Count + " withPath=" + withPath.Count);
+        foreach (var item in withPath.Take(maxPrinted))
+        {
+            Console.WriteLine("  activeVfx=0x" + item.Address.ToString("X")
+                + " vtable=0x" + item.VTable.ToString("X")
+                + " pos=(" + FormatFloat(item.X) + "," + FormatFloat(item.Y) + "," + FormatFloat(item.Z) + ")"
+                + " caster=" + item.ActorCaster
+                + " target=" + item.ActorTarget
+                + " staticCaster=" + item.StaticCaster
+                + " staticTarget=" + item.StaticTarget
+                + " res=0x" + item.ResourceInstance.ToString("X")
+                + " path=" + item.Path);
+        }
+
+        if (withPath.Count == 0)
+        {
+            Console.WriteLine("  result: graph traversal did not resolve active VFX paths; current offsets/root assumptions are not enough for runtime direct VFX");
+            foreach (var item in results.Where(item => item.ResourceInstance != 0).Take(Math.Min(maxPrinted, 12)))
+            {
+                Console.WriteLine("  unresolved=0x" + item.Address.ToString("X")
+                    + " pos=(" + FormatFloat(item.X) + "," + FormatFloat(item.Y) + "," + FormatFloat(item.Z) + ")"
+                    + " res=0x" + item.ResourceInstance.ToString("X"));
+            }
+        }
+    }
+
+    /// <summary>功能：打印 World 对象头部可疑指针，辅助确认 root offset 是否变化。</summary>
+    private static void DumpSceneWorldRoots(ProcessMemoryReader reader, long worldAddress)
+    {
+        if (!reader.TryReadBytes(worldAddress, 0x80, out var bytes))
+        {
+            Console.WriteLine("  world read failed: " + reader.Status.LastError);
+            return;
+        }
+
+        for (var offset = 0; offset <= 0x70; offset += 8)
+        {
+            var ptr = BitConverter.ToInt64(bytes, offset);
+            if (LooksLikeUserModePointer(ptr))
+            {
+                Console.WriteLine("  world+0x" + offset.ToString("X2") + " -> 0x" + ptr.ToString("X") + " section=" + FindSectionName(reader, ptr));
+            }
+        }
+    }
+
+    /// <summary>功能：读取当前版本验证过的 World scene root 候选指针。</summary>
+    private static List<long> ReadSceneRootCandidates(ProcessMemoryReader reader, long worldAddress)
+    {
+        var roots = new List<long>();
+        foreach (var offset in new[] { 0x30, 0x40, 0x48 })
+        {
+            if (TryReadPointer(reader, worldAddress + offset, out var ptr) && LooksLikeUserModePointer(ptr) && !roots.Contains(ptr))
+            {
+                roots.Add(ptr);
+                Console.WriteLine("  rootCandidate world+0x" + offset.ToString("X") + "=0x" + ptr.ToString("X"));
+            }
+        }
+
+        return roots;
+    }
+
+    /// <summary>功能：从 root 出发遍历 scene object graph，并收集 VFX probe 信息。</summary>
+    private static List<SceneObjectProbe> TraverseSceneObjectGraph(ProcessMemoryReader reader, IEnumerable<long> roots, int maxNodes)
+    {
+        var queue = new Queue<long>(roots.Where(LooksLikeUserModePointer));
+        var visited = new HashSet<long>();
+        var results = new List<SceneObjectProbe>();
+        while (queue.Count > 0 && visited.Count < maxNodes)
+        {
+            var address = queue.Dequeue();
+            if (!LooksLikeUserModePointer(address) || !visited.Add(address))
+            {
+                continue;
+            }
+
+            if (!TryReadSceneObjectProbe(reader, address, out var probe))
+            {
+                continue;
+            }
+
+            results.Add(probe);
+            foreach (var next in new[] { probe.ChildObject, probe.NextSiblingObject })
+            {
+                if (LooksLikeUserModePointer(next) && !visited.Contains(next))
+                {
+                    queue.Enqueue(next);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>功能：按 Scene.Object/VfxObject offset 读取单个 object 的 VFX 候选信息。</summary>
+    private static bool TryReadSceneObjectProbe(ProcessMemoryReader reader, long address, out SceneObjectProbe probe)
+    {
+        probe = new SceneObjectProbe { Address = address };
+        if (!reader.TryReadBytes(address, 0x2A8, out var bytes))
+        {
+            return false;
+        }
+
+        probe.VTable = BitConverter.ToInt64(bytes, 0x00);
+        probe.ParentObject = BitConverter.ToInt64(bytes, 0x18);
+        probe.PreviousSiblingObject = BitConverter.ToInt64(bytes, 0x20);
+        probe.NextSiblingObject = BitConverter.ToInt64(bytes, 0x28);
+        probe.ChildObject = BitConverter.ToInt64(bytes, 0x30);
+        probe.X = BitConverter.ToSingle(bytes, 0x50);
+        probe.Y = BitConverter.ToSingle(bytes, 0x54);
+        probe.Z = BitConverter.ToSingle(bytes, 0x58);
+        probe.ActorCaster = BitConverter.ToInt32(bytes, 0x128);
+        probe.ActorTarget = BitConverter.ToInt32(bytes, 0x130);
+        probe.StaticCaster = BitConverter.ToInt32(bytes, 0x1B8);
+        probe.StaticTarget = BitConverter.ToInt32(bytes, 0x1C0);
+        probe.ResourceInstance = BitConverter.ToInt64(bytes, 0x2A0);
+        if (LooksLikeUserModePointer(probe.ResourceInstance) && TryResolveVfxResourcePath(reader, probe.ResourceInstance, out var path))
+        {
+            probe.Path = path;
+        }
+
+        return true;
+    }
+
+    /// <summary>功能：保存 probe-vfx-world 输出所需的 scene object/VfxObject 字段。</summary>
+    private sealed class SceneObjectProbe
+    {
+        public long Address { get; set; }
+        public long VTable { get; set; }
+        public long ParentObject { get; set; }
+        public long PreviousSiblingObject { get; set; }
+        public long NextSiblingObject { get; set; }
+        public long ChildObject { get; set; }
+        public float X { get; set; }
+        public float Y { get; set; }
+        public float Z { get; set; }
+        public int ActorCaster { get; set; }
+        public int ActorTarget { get; set; }
+        public int StaticCaster { get; set; }
+        public int StaticTarget { get; set; }
+        public long ResourceInstance { get; set; }
+        public string Path { get; set; } = string.Empty;
     }
 
     private static void ProbeVfxObjectCommand(ProcessMemoryReader reader, string[] args)

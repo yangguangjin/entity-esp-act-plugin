@@ -7,6 +7,9 @@ namespace EntityEspActPlugin.Core.Services;
 
 public sealed class RelatedActLogStore
 {
+    /// <summary>功能：默认只保留最近 120 秒缓存，覆盖当前 UI 最大显示窗口并防止长时间打本无限增长。</summary>
+    public const double DefaultCacheRetentionSeconds = 120d;
+
     private readonly object _syncRoot = new object();
     private readonly Dictionary<uint, List<RelatedActLogEntry>> _logsByEntity = new Dictionary<uint, List<RelatedActLogEntry>>();
     private readonly List<KeyValuePair<uint, RelatedActLogEntry>> _panelLogs = new List<KeyValuePair<uint, RelatedActLogEntry>>();
@@ -87,6 +90,8 @@ public sealed class RelatedActLogStore
 
                 list.Add(entry);
             }
+
+            PruneExpiredLocked(now, DefaultCacheRetentionSeconds);
         }
     }
 
@@ -161,6 +166,24 @@ public sealed class RelatedActLogStore
             var recent = _panelLogs.Where(pair => pair.Value.Timestamp >= cutoff).ToArray();
             return recent.Skip(Math.Max(0, recent.Length - maxLines)).ToArray();
         }
+    }
+
+    /// <summary>功能：删除超过缓存保留窗口的 ACT 日志，防止长时间战斗后查询和渲染越来越慢。</summary>
+    private void PruneExpiredLocked(DateTime now, double retentionSeconds)
+    {
+        var safeRetentionSeconds = Math.Max(1d, retentionSeconds);
+        var cutoff = now.AddSeconds(-safeRetentionSeconds);
+        foreach (var key in _logsByEntity.Keys.ToList())
+        {
+            var list = _logsByEntity[key];
+            list.RemoveAll(entry => entry.Timestamp < cutoff);
+            if (list.Count == 0)
+            {
+                _logsByEntity.Remove(key);
+            }
+        }
+
+        _panelLogs.RemoveAll(pair => pair.Value.Timestamp < cutoff);
     }
 
     private AbilityVfxCandidate? FindVfxCandidate(string line)

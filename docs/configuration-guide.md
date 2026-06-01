@@ -648,8 +648,12 @@ ShowCastBar=true
 字段：`ShowRelatedActLogs`
 
 效果：
-- 开启：采集并缓存能关联到实体的 ACT 战斗日志。
-- 关闭：不采集实体相关日志；实体旁日志和右侧固定日志面板都会为空。
+- 开启且主 overlay 已打开：采集并缓存能关联到实体的 ACT 战斗日志。
+- 关闭或主 overlay 未打开：不采集实体相关日志；实体旁日志和右侧固定日志面板都会为空。
+
+性能说明：
+- 为避免“只加载 ACT 插件但没开 overlay”时仍解析每条战斗日志，当前实现只在主 overlay 窗口运行期间处理相关日志、14 日志读条进度和 ACT 活动生命周期。
+- 队伍名单 `0B/11` 仍会用低成本行类型判断保持更新，供 overlay 打开后过滤队友使用。
 
 用途：
 - 快速写 TRN 正则。
@@ -892,6 +896,7 @@ true
 说明：
 - 实体旁日志和右侧固定日志面板使用同一份缓存，但查询时各自按自己的秒数和条数过滤。
 - 短窗口查询不会删除缓存里的旧日志，因此不会影响更长的右侧面板窗口。
+- 缓存本身会在新增日志时剪掉超过约 120 秒的旧行，避免长时间打本后每帧查询越来越慢；因此不建议把显示窗口设计成超过 120 秒。
 - 例如实体旁日志 6 秒、右侧日志 10 秒时：实体旁只显示 6 秒内日志，右侧仍能显示 10 秒内日志。
 
 ### 过滤自己/队友 14 读条日志
@@ -1418,72 +1423,99 @@ matchedRosterPlayers=22 / 24
 
 ## 12. 客户端 .avfx 路径抓取
 
-### 显示左上角 VFX 列表
+### 显示 VFX 监控面板
 
-字段：`ShowRecentVfxPanel`
+字段：`ShowVfxMonitorPanel`
 
 效果：
-- 开启：在游戏左上角显示一个小透明窗口，实时列出插件内置监控扫描到的 `.avfx`。
-- 关闭：隐藏这个左上角 VFX 列表。
+- 开启：由 ACT 插件创建一个独立的 VFX 实时内存面板，并启用插件内 `ActiveVfxMemoryService`。
+- 关闭：隐藏/关闭 VFX 面板，并停止 active VFX 直接读取缓存。
 
-默认：开启。
+默认：关闭。
 
 相关字段：
-- `RecentVfxWindowSeconds`：VFX 保留窗口秒数，只控制已经扫到的路径在面板里保留多久，不控制扫描速度。
-- `RecentVfxDisplaySeconds`：`NEW` 高亮秒数，只控制新路径显示 `NEW` 的时间，不控制扫描速度。
-- `RecentVfxMaxLines`：左上角最多显示多少行 VFX 路径。
+- `VfxMaxDistance`：VFX 最远显示距离。当前实时存活区按玩家当前位置实时过滤和刷新距离；历史日志区只记录首次进入显示范围时的距离/position 快照。
+- `VfxDisplaySeconds`：VFX 历史日志显示秒数。active VFX 离开 `Scene.World` 后仍保留该秒数，默认 30 秒。
+- `VfxMaxRows`：面板每个区块最多显示多少条 VFX。
+- `VfxSampleHz`：后台读取 `Scene.World` active VFX 的采样频率，默认 10Hz，上限 30Hz；和 `RenderFps` 解耦，避免 UI 高刷时同步执行重型内存遍历。
+- `VfxShortLivedMaxAgeSeconds`：短命 VFX 判定秒数 N；VFX 从首次到末次 active 小于等于 N 秒时，允许进入额外续显。
+- `VfxShortLivedHoldSeconds`：短命 VFX 续显秒数 M；短命 VFX 超过普通显示窗口后，再额外显示 M 秒并标记 `HOLD`。
+- `RenderFps`：主 overlay 渲染频率；VFX 文字面板 UI 刷新最多 30 FPS，仅用于显示缓存文本，不再决定内存采样频率。
+- `VfxAnchorMode`：距离基准，当前 runtime 使用 `Self`。
 
 默认：
 
 ```text
-RecentVfxWindowSeconds = 30
-RecentVfxDisplaySeconds = 12
-RecentVfxMaxLines = 12
+ShowVfxMonitorPanel = false
+VfxMaxDistance = 100
+VfxDisplaySeconds = 30
+VfxMaxRows = 12
+VfxSampleHz = 10
+VfxShortLivedMaxAgeSeconds = 2
+VfxShortLivedHoldSeconds = 15
+VfxAnchorMode = Self
 ```
 
 显示位置：
-- 固定在游戏左上角。
-- 不绑定实体。
-- 不显示在实体标签上方。
+- VFX 面板由插件内部 `VfxMonitorController` / `VfxMonitorForm` 管理。
+- 不再绘制在主 Entity ESP overlay 的实体标签渲染链路中。
+- 不绑定实体标签。
 - 不追加到 `Log:` 行尾。
 - 不和 `14` 日志读条进度条混合。
+- 不需要启动独立 exe，也不需要手动 Start/Stop。
 
-显示内容：
+显示内容示例：
 
 ```text
-Live VFX keep 30s / NEW 12s / max 12
-NEW 03s vfx/common/eff/m0532_stlp2c0x.avfx
-LIVE 03s vfx/monster/m0532/eff/m0532sp_03c0x.avfx
+VFX 监控：实时存活 + 历史日志 | 距离≤100 | 历史保留30.0s | 短命≤2.0s+续15.0s | UI FPS≤30/配置60 | 采样≈10Hz | 每区最大12条 | Active VFX memory: active=8 live=8 history=12 roots=3 nodes=420 vtables=2 reject=9 probed=36 skipped=384 world=0x1560417F500; VFX sampler: sample ok live=8 history=12 at=20:10:30.120
+当前模式不做 .avfx 全内存扫描；上方区块是当前仍在 Scene.World 的实时存活 VFX，下方区块是首次观测快照保留的历史日志。复制可用上方按钮；手动选择时建议勾选暂停刷新。
+========== 当前实时存活 VFX ==========
+NEW  00s dist=18.4 ActiveInstance caster=0xFFFFFFFF target=0x00000000 pos=(-41.7,-5.0,163.3) bg/ffxiv/fst_f1/common/vfx/eff/f1bigsui001o.avfx
+LIVE 00s dist=42.7 ActiveInstance caster=0xFFFFFFFF target=0x39881C2B pos=(-101.3,1.8,11.2) bgcommon/world/vfx_world/vfx/eff/w0fire004ay.avfx
+
+========== 历史 VFX 日志 ==========
+LIVE 09s dist=18.4 ActiveInstance caster=0xFFFFFFFF target=0x00000000 pos=(-41.7,-5.0,163.3) bg/ffxiv/fst_f1/common/vfx/eff/f1bigsui001o.avfx
+REC  36s dist=21.3 ActiveInstance caster=0xFFFFFFFF target=0x00000000 pos=(12.0,0.0,8.0) vfx/common/eff/recent_example.avfx
+HOLD 44s dist=9.8 ActiveInstance caster=0xFFFFFFFF target=0x00000000 pos=(3.0,0.0,4.0) vfx/common/eff/instant_flash.avfx
 ```
 
-原因：
-- `.avfx` 可能是实体特效、场地特效、通用施法特效或资源加载特效。
-- 它不一定能归属到某个实体。
-- 不走 abilityId 候选逻辑，避免场地特效或非实体特效看不见。
+当前读取链路：
+- `ActiveVfxMemoryService` 解析 `Client::Graphics::Scene::World.Instance` 签名：`48 8B 05 ?? ?? ?? ?? 48 8B 50 40`。
+- VFX 内存采样由后台 `VfxSnapshotSampler` 按 `VfxSampleHz` 触发，面板 UI tick 只读取上一帧缓存，避免 ACT/WinForms UI 线程同步执行重型遍历。
+- 每次后台采样从 `Scene.World` 根对象遍历 `ChildObject` / `NextSiblingObject` 图。
+- 已确认能解析 `.avfx` 的 vtable 会稳定探测；未知 vtable 不再被永久跳过，而是先尝试按 VFX 解析，失败后只短暂抑制约 2 秒，避免进副本后新的 VFX 子类被环境 VFX vtable 白名单挡掉。
+- 状态栏里的 `roots/nodes/vtables/reject/probed/skipped` 用于判断实时读取状态：`nodes` 表示本 tick 遍历到的 scene node，`probed` 表示尝试按 VFX 解析的 node，`skipped` 表示被短 TTL 失败缓存跳过的 node。
+- active `VfxObject` 按 FFXIVClientStructs offset 读取：`Position +0x50`、`ActorCaster +0x128`、`ActorTarget +0x130`、`StaticCaster +0x1B8`、`StaticTarget +0x1C0`、`VfxResourceInstance +0x2A0`。
+- path 通过 `VfxResourceInstance +0x08 -> +0x18 -> ResourceHandle.FileName +0x48` 解析。
+- 玩家当前位置通过 ObjectTable slot 0 读取，然后用 `VfxMaxDistance` 做距离过滤。
 
-实时监控说明：
-- 不再启动独立 `EntityEspProbe.exe`。
-- 不再写入 `cast-vfx-*.log` 作为实时显示中间文件。
-- 插件加载时自动启动内置后台扫描线程。
-- ACT 卸载插件或 ACT 关闭时停止扫描线程。
-- Overlay 直接读取内存扫描服务的实时快照。
-- 监控使用增量热点扫描：每轮优先扫上次命中过 `.avfx` 的热点内存区域，再分片推进其他区域，避免每轮完整扫 5~6GB 造成明显延迟。
-- `NEW` 表示最近新出现的路径；`LIVE` 表示最近扫描仍存在的路径，更接近当前画面/当前资源池正在用到的特效。
-- 配置页的 `启用 VFX 监控与左上角列表` 是总开关：开启时启动后台扫描并显示左上角面板；关闭时隐藏面板并停止后台扫描线程。
-- 插件页的 `复制最近 VFX 的 TRN 复现片段` 会把最近一条路径转成 ActorVfx / Channeling / PictoACT StaticVfx 片段复制到剪贴板，详见 `docs/trn-vfx-replay.md`。
-- 如果左上角显示 `no live .avfx yet`，说明监控线程还没完成首次有效扫描或 FF14 进程暂不可读。
+实时说明：
+- 当前 runtime 不再使用 `.avfx` 全内存扫描线程。
+- 当前 runtime 不再使用 PathScanFallback 的“扫描一次 sleep 一次”刷新模型。
+- 当前 runtime 不在 VFX 面板 UI tick 中同步遍历 Scene.World；UI 最多 30 FPS 刷新文本，内存读取按 `VfxSampleHz` 后台采样。
+- 面板工具栏提供 `复制全部`、`复制选中/当前行`、`复制路径列表` 和 `暂停刷新(便于选中复制)`；高频刷新时建议先暂停再手动框选。
+- 面板上方 `========== 当前实时存活 VFX ==========` 是实时区：只显示本次刷新仍在 `Scene.World` active graph 的 VFX，距离和 position 按当前玩家坐标/内存值刷新。
+- 面板下方 `========== 历史 VFX 日志 ==========` 是历史区：记录 VFX 首次进入显示范围时的 path、position、距离、caster/target 快照，后续玩家移动不会覆盖这条历史记录。
+- 历史区里的 `NEW` / `LIVE` 表示该 VFX 日志记录对应的 VFX 仍在 active graph；`REC` 表示已经离开 active graph，但仍在 `VfxDisplaySeconds` 普通日志式显示窗口内。
+- `HOLD` 表示该 VFX 从首次到末次 active 小于等于 `VfxShortLivedMaxAgeSeconds`，普通显示窗口结束后继续按 `VfxShortLivedHoldSeconds` 续显。
+- 面板显示的是当前 `Scene.World` 可遍历到的 active VFX 实例和历史保留条目；不包含从未挂到 scene graph、或只存在资源缓存里的 path。
+- 旧的 `复制最近 VFX 的 TRN 复现片段` 按钮已移除；需要复现时请按 `docs/trn-vfx-replay.md` 手动参考。
+- 如果实时区显示 `no current active VFX instances` 且历史区也没有条目，先确认 FF14 正在运行且角色在游戏内；再用 `dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -c Release -- probe-vfx-world 8000 80` 验证签名和 scene graph。
+- 如果进副本后只剩少量环境 VFX、没有机制新 VFX，看状态栏：`nodes` 持续变化说明 graph 仍在遍历；`probed` 会周期性尝试未知 vtable，`vtables` 应在发现新 VFX 类型时增加。若 `nodes=0` 或 `roots=0`，优先用 probe 验证 World root；若 `probed` 长期为 0，则说明 vtable 探测策略或缓存异常。
 
 用途：
-- 当 Boss 释放技能时，抓取客户端真实加载的 `.avfx` 路径。
-- 后续辅助写 Triggernometry / PostNamazu ActorVfx / PictoACT AOE。
+- 观察当前场地周围或实体周围正在播放的 `.avfx`。
+- 辅助写 Triggernometry / PostNamazu ActorVfx / PictoACT AOE。
+- 和 ACT 网络日志按时间、source/target、位置距离做关联，定位某个机制对应的原生视觉。
 
 重要限制：
 - ACT 解析日志和 Network 日志本身不包含 `.avfx` 路径。
-- `.avfx` 路径来自 FF14 客户端内存中的真实资源字符串。
-- 不要在 ACT 插件 UI 线程做全内存扫描。
-- 采集结果是候选路径，不是一次就能确认 1:1 技能映射。
+- 当前读取的是 `Scene.World` object graph 中可遍历到的 active VFX；如果游戏内部某类 VFX 不挂在该 graph 上，仍可能看不到。
+- 当前 caster/target 字段来自 `VfxObject` 原始字段，不同类型 VFX 可能用 `ActorCaster/ActorTarget` 或 `StaticCaster/StaticTarget`，需要结合日志验证语义。
+- 不要在 ACT 插件 UI 线程、Diagnostics 或 OnPaint 中做全内存扫描；VFX 面板 tick 只做 bounded graph traversal。
+- 游戏更新后如果 `Scene.World` 签名或 `VfxObject` offset 变化，需要先用 probe 验证再写入 runtime。
 
-### 扫描当前客户端已加载 .avfx
+### 离线扫描当前客户端已加载 .avfx
 
 ```text
 dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -- scan-avfx-memory

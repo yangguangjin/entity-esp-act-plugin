@@ -1,8 +1,6 @@
 using System;
 using System.Drawing;
 using System.IO;
-using System.Linq;
-using System.Security;
 using System.Windows.Forms;
 using Advanced_Combat_Tracker;
 using EntityEspActPlugin.Core.Models;
@@ -17,8 +15,8 @@ public sealed class PluginMain : IActPluginV1
     private readonly RelatedActLogStore _relatedLogStore = new RelatedActLogStore();
     private readonly PartyListTracker _partyListTracker = new PartyListTracker();
     private readonly ActCastProgressStore _actCastProgressStore = new ActCastProgressStore();
-    private readonly LiveVfxMonitorService _liveVfxMonitor = new LiveVfxMonitorService();
     private readonly EntityActivityTracker _entityActivityTracker = new EntityActivityTracker();
+    private readonly VfxMonitorController _vfxMonitorController;
 
     private Label? _statusText;
     private TabPage? _pluginScreenSpace;
@@ -35,6 +33,16 @@ public sealed class PluginMain : IActPluginV1
             "Config",
             "EntityEspPlugin.json");
         _config = new EspConfig();
+        _vfxMonitorController = new VfxMonitorController(
+            value =>
+            {
+                _config.ShowVfxMonitorPanel = value;
+                if (_pluginScreenSpace != null)
+                {
+                    RebuildConfigPanel();
+                }
+            },
+            SetStatus);
     }
 
     public void InitPlugin(TabPage pluginScreenSpace, Label pluginStatusText)
@@ -45,8 +53,8 @@ public sealed class PluginMain : IActPluginV1
         pluginScreenSpace.Text = "Entity ESP";
         pluginScreenSpace.Controls.Add(BuildConfigPanel());
         ActGlobals.oFormActMain.OnLogLineRead += OnLogLineRead;
-        ApplyVfxMonitorState();
-        SetStatus("Entity ESP loaded; " + GetVfxMonitorStatusText());
+        _vfxMonitorController.ApplyConfig(_config);
+        SetStatus("Entity ESP loaded; " + _vfxMonitorController.StatusText);
     }
 
     public void DeInitPlugin()
@@ -54,7 +62,7 @@ public sealed class PluginMain : IActPluginV1
         ActGlobals.oFormActMain.OnLogLineRead -= OnLogLineRead;
         _testOverlay?.Close();
         _testOverlay = null;
-        _liveVfxMonitor.Stop();
+        _vfxMonitorController.Dispose();
         _configService.Save(_configPath, _config);
         SetStatus("Entity ESP unloaded");
     }
@@ -67,15 +75,31 @@ public sealed class PluginMain : IActPluginV1
         }
 
         var line = logInfo.logLine ?? string.Empty;
-        _partyListTracker.ObserveLogLine(line);
-        _actCastProgressStore.ObserveLogLine(line);
-        _entityActivityTracker.ObserveLogLine(
-            line,
-            _config.EntityActivityLifetimeSeconds,
-            _config.PreserveShortLivedEntitiesAfterTerminal,
-            _config.ShortLivedEntityMaxAgeSeconds,
-            _config.ShortLivedEntityHoldSeconds);
-        if (!_config.ShowRelatedActLogs)
+        var overlayOpen = IsTestOverlayOpen();
+        if (MightBePartyListLine(line))
+        {
+            // 功能：队伍名单只解析 0B/11 相关行，避免每条战斗日志都进入 PartyListTracker 的类型扫描。
+            _partyListTracker.ObserveLogLine(line);
+        }
+
+        if (_config.ShowActCastProgressBar && overlayOpen)
+        {
+            // 功能：14 日志读条进度只服务 overlay 渲染；overlay 未打开时不在 ACT 日志线程上解析每条日志。
+            _actCastProgressStore.ObserveLogLine(line);
+        }
+
+        if (_config.UseActLogActivityLifetime && overlayOpen)
+        {
+            // 功能：ACT 活动生命周期是 overlay 显示策略，窗口未打开时不为每条日志扫描 EntityId。
+            _entityActivityTracker.ObserveLogLine(
+                line,
+                _config.EntityActivityLifetimeSeconds,
+                _config.PreserveShortLivedEntitiesAfterTerminal,
+                _config.ShortLivedEntityMaxAgeSeconds,
+                _config.ShortLivedEntityHoldSeconds);
+        }
+
+        if (!_config.ShowRelatedActLogs || !overlayOpen)
         {
             return;
         }
@@ -89,6 +113,35 @@ public sealed class PluginMain : IActPluginV1
             _config.RelatedActLogCasterEntityIdBlacklist,
             _config.RelatedActLogCasterBNpcBlacklist,
             _config.RelatedActLogCasterBNpcNameBlacklist);
+    }
+
+    private bool IsTestOverlayOpen()
+    {
+        // 功能：判断当前 overlay 窗口是否正在运行，用于避免未显示 overlay 时仍解析读条进度。
+        return _testOverlay != null && !_testOverlay.IsDisposed;
+    }
+
+    private static bool MightBePartyListLine(string line)
+    {
+        // 功能：用低成本字符串判断筛出 ACT 0B PartyList 和 network 11 roster 行，避免每条日志都做完整类型解析。
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        if (line.StartsWith("11|", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var searchStart = 0;
+        var timestampEnd = line.IndexOf(']');
+        if (timestampEnd >= 0 && timestampEnd + 1 < line.Length)
+        {
+            searchStart = timestampEnd + 1;
+        }
+
+        return line.IndexOf("0B:", searchStart, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private Control BuildConfigPanel()
@@ -125,36 +178,64 @@ public sealed class PluginMain : IActPluginV1
         };
         var showCastBar = CreateCheckbox("显示内存读条条形", _config.ShowCastBar, value => _config.ShowCastBar = value);
         var showActCastProgressBar = CreateCheckbox("显示 14 日志读条进度条", _config.ShowActCastProgressBar, value => _config.ShowActCastProgressBar = value);
-        var showRecentVfxPanel = CreateCheckbox("启用 VFX 监控与左上角列表", _config.ShowRecentVfxPanel, value =>
+        var showVfxMonitorPanel = CreateCheckbox("显示 VFX 监控面板", _config.ShowVfxMonitorPanel, value =>
         {
-            _config.ShowRecentVfxPanel = value;
-            ApplyVfxMonitorState();
-            RestartTestOverlayIfOpen();
-            SetStatus("VFX switch changed; " + GetVfxMonitorStatusText());
+            _config.ShowVfxMonitorPanel = value;
+            _vfxMonitorController.ApplyConfig(_config);
+            SetStatus("VFX monitor config changed; " + _vfxMonitorController.StatusText);
         });
-        var recentVfxWindowInput = CreateTextInput("VFX 保留窗口秒数(只影响显示)", _config.RecentVfxWindowSeconds.ToString("0"), value =>
-        {
-            if (float.TryParse(value, out var parsed))
-            {
-                _config.RecentVfxWindowSeconds = OverlayStyleService.Clamp(parsed, 1f, 300f);
-            }
-        });
-        var recentVfxDisplayInput = CreateTextInput("VFX NEW高亮秒数(不影响扫描)", _config.RecentVfxDisplaySeconds.ToString("0"), value =>
+        var vfxMaxDistanceInput = CreateTextInput("VFX 最远显示距离", _config.VfxMaxDistance.ToString("0"), value =>
         {
             if (float.TryParse(value, out var parsed))
             {
-                _config.RecentVfxDisplaySeconds = OverlayStyleService.Clamp(parsed, 1f, 120f);
+                _config.VfxMaxDistance = OverlayStyleService.Clamp(parsed, 0f, 500f);
+                _vfxMonitorController.ApplyConfig(_config);
             }
         });
-        var recentVfxMaxLinesInput = CreateTextInput("VFX 最大显示行数", _config.RecentVfxMaxLines.ToString(), value =>
+        var vfxDisplaySecondsInput = CreateTextInput("VFX 日志式显示秒数", _config.VfxDisplaySeconds.ToString("0.0"), value =>
+        {
+            if (float.TryParse(value, out var parsed))
+            {
+                // 功能：控制 active VFX 离开 Scene.World 后仍在面板保留多久，类似右侧日志保留窗口。
+                _config.VfxDisplaySeconds = OverlayStyleService.Clamp(parsed, 0.5f, 120f);
+                _vfxMonitorController.ApplyConfig(_config);
+            }
+        });
+        var vfxMaxRowsInput = CreateTextInput("VFX 最大显示条数", _config.VfxMaxRows.ToString(), value =>
         {
             if (int.TryParse(value, out var parsed))
             {
-                _config.RecentVfxMaxLines = (int)OverlayStyleService.Clamp(parsed, 1f, 30f);
+                _config.VfxMaxRows = Math.Max(1, Math.Min(80, parsed));
+                _vfxMonitorController.ApplyConfig(_config);
             }
         });
-        var copyTrnVfxSnippet = new Button { Text = "复制最近 VFX 的 TRN 复现片段", AutoSize = true };
-        copyTrnVfxSnippet.Click += delegate { CopyLatestVfxTrnSnippet(); };
+        var vfxSampleHzInput = CreateTextInput("VFX 内存采样 Hz", _config.VfxSampleHz.ToString(), value =>
+        {
+            if (int.TryParse(value, out var parsed))
+            {
+                // 功能：控制 Scene.World active VFX 后台采样频率，避免按 UI RenderFps 执行重型内存遍历。
+                _config.VfxSampleHz = Math.Max(1, Math.Min(VfxSnapshotSampler.MaxSampleHz, parsed));
+                _vfxMonitorController.ApplyConfig(_config);
+            }
+        });
+        var vfxShortLivedMaxAgeInput = CreateTextInput("VFX 短命判定秒数 N", _config.VfxShortLivedMaxAgeSeconds.ToString("0.0"), value =>
+        {
+            if (float.TryParse(value, out var parsed))
+            {
+                // 功能：判定 active VFX 从首次到末次存在小于等于 N 秒时可进入短命续显。
+                _config.VfxShortLivedMaxAgeSeconds = OverlayStyleService.Clamp(parsed, 0f, 30f);
+                _vfxMonitorController.ApplyConfig(_config);
+            }
+        });
+        var vfxShortLivedHoldInput = CreateTextInput("VFX 短命续显秒数 M", _config.VfxShortLivedHoldSeconds.ToString("0.0"), value =>
+        {
+            if (float.TryParse(value, out var parsed))
+            {
+                // 功能：短命 active VFX 超过普通显示窗口后额外续显 M 秒，方便看清一闪而过的效果。
+                _config.VfxShortLivedHoldSeconds = OverlayStyleService.Clamp(parsed, 0f, 60f);
+                _vfxMonitorController.ApplyConfig(_config);
+            }
+        });
         var showUntargetable = CreateCheckbox("显示不可选中实体", _config.ShowUntargetable, value => _config.ShowUntargetable = value);
         var filterSelf = CreateCheckbox("过滤自己", _config.FilterSelf, value => _config.FilterSelf = value);
         var filterParty = CreateCheckbox("过滤队友玩家", _config.FilterPartyPlayers, value => _config.FilterPartyPlayers = value);
@@ -328,6 +409,7 @@ public sealed class PluginMain : IActPluginV1
         resetDefaults.Click += delegate
         {
             _config = new EspConfig();
+            _vfxMonitorController.ApplyConfig(_config);
             _configService.Save(_configPath, _config);
             RebuildConfigPanel();
             RestartTestOverlayIfOpen();
@@ -354,10 +436,11 @@ public sealed class PluginMain : IActPluginV1
         save.Click += delegate
         {
             NormalizeRelatedLogSimplifyConfig();
+            _vfxMonitorController.ApplyConfig(_config);
             _configService.Save(_configPath, _config);
             RefreshDiagnosticsWithoutCandidateScan();
             RestartTestOverlayIfOpen();
-            SetStatus("Entity ESP config saved and applied; " + _liveVfxMonitor.StatusText);
+            SetStatus("Entity ESP config saved and applied; " + _vfxMonitorController.StatusText);
         };
 
         var diagnosticsPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4) };
@@ -440,13 +523,15 @@ public sealed class PluginMain : IActPluginV1
             panel.Controls.Add(relatedLogControl);
         }
 
-        AddSection("VFX 监控");
-        panel.Controls.Add(showRecentVfxPanel);
-        panel.Controls.Add(recentVfxWindowInput);
-        panel.Controls.Add(recentVfxDisplayInput);
-        panel.Controls.Add(recentVfxMaxLinesInput);
-        panel.Controls.Add(copyTrnVfxSnippet);
-        panel.Controls.Add(new Label { AutoSize = true, Text = "VFX 提示：这些配置只控制面板保留/高亮/行数；扫描延迟取决于内存扫描耗时，已改为增量热点扫描。ActorVfx/Channeling 可用于快速复现，钢铁/月环/踩踏/点名 AOE 这类几何范围优先用 PictoACT Omen。" });
+        AddSection("VFX 实时内存");
+        panel.Controls.Add(showVfxMonitorPanel);
+        panel.Controls.Add(vfxMaxDistanceInput);
+        panel.Controls.Add(vfxDisplaySecondsInput);
+        panel.Controls.Add(vfxMaxRowsInput);
+        panel.Controls.Add(vfxSampleHzInput);
+        panel.Controls.Add(vfxShortLivedMaxAgeInput);
+        panel.Controls.Add(vfxShortLivedHoldInput);
+        panel.Controls.Add(new Label { AutoSize = true, Text = "VFX 提示：当前模式每帧直接读取 Scene.World active VfxObject，不启动 .avfx 全内存扫描线程；离开 active graph 后按日志式显示秒数保留，短命 VFX 可在普通窗口后额外续显 M 秒。" });
 
         AddSection("性能与数量限制");
         panel.Controls.Add(maxDistanceInput);
@@ -503,84 +588,6 @@ public sealed class PluginMain : IActPluginV1
         }
     }
 
-    private void ApplyVfxMonitorState()
-    {
-        if (_config.ShowRecentVfxPanel)
-        {
-            if (!_liveVfxMonitor.IsRunning)
-            {
-                _liveVfxMonitor.EnsureRunning();
-            }
-        }
-        else if (_liveVfxMonitor.IsRunning)
-        {
-            _liveVfxMonitor.Stop();
-        }
-    }
-
-    private string GetVfxMonitorStatusText()
-    {
-        if (!_config.ShowRecentVfxPanel)
-        {
-            return "VFX monitor: disabled by VFX switch";
-        }
-
-        return _liveVfxMonitor.StatusText;
-    }
-
-    private void CopyLatestVfxTrnSnippet()
-    {
-        var latest = _liveVfxMonitor.Snapshot(_config.RecentVfxWindowSeconds, _config.RecentVfxDisplaySeconds, 1).FirstOrDefault();
-        if (latest == null || string.IsNullOrWhiteSpace(latest.Path))
-        {
-            SetStatus("No recent VFX path available for TRN snippet");
-            MessageBox.Show("左上角 VFX 列表里还没有可复制的 .avfx。先进本/传送/触发机制，让监控抓到路径后再点。", "Entity ESP", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        var text = BuildTrnVfxSnippet(latest.Path);
-        Clipboard.SetText(text);
-        SetStatus("Copied TRN VFX snippet for " + latest.Path);
-        MessageBox.Show("已复制 TRN 复现片段。\n\n路径：" + latest.Path + "\n\n优先粘贴 ActorVfx/Channeling 参数测试；几何范围用 PictoACT Omen 更稳定。", "Entity ESP", MessageBoxButtons.OK, MessageBoxIcon.Information);
-    }
-
-    private static string BuildTrnVfxSnippet(string path)
-    {
-        var escapedPath = SecurityElement.Escape(path) ?? path;
-        var sourceTarget = "${_me.Address}, ${_me.Address}, " + path;
-        var xmlSourceTarget = "${_me.Address}, ${_me.Address}, " + escapedPath;
-        var fileName = Path.GetFileNameWithoutExtension(path);
-        var channelName = path.StartsWith("vfx/channeling/eff/", StringComparison.OrdinalIgnoreCase)
-            ? fileName
-            : string.Empty;
-
-        var channelBlock = string.IsNullOrWhiteSpace(channelName)
-            ? ""
-            : "\r\n\r\nChanneling 快捷参数(只适合 vfx/channeling/eff)：\r\nCallbackName: Channeling\r\nCallbackParam: ${_me.Address}, ${_me.Address}, " + channelName + "\r\n\r\nTRN XML:\r\n<Action ActionType=\"NamedCallback\" NamedCallbackName=\"Channeling\"\r\n        NamedCallbackParam=\"${_me.Address}, ${_me.Address}, " + SecurityElement.Escape(channelName) + "\" />";
-
-        return "TRN VFX 快速复现\r\n"
-            + "================\r\n"
-            + "Path: " + path + "\r\n\r\n"
-            + "ActorVfx 参数(截图里的用法，推荐先测这个)：\r\n"
-            + "CallbackName: ActorVfx\r\n"
-            + "CallbackParam: " + sourceTarget + "\r\n\r\n"
-            + "TRN XML:\r\n"
-            + "<Action ActionType=\"NamedCallback\" NamedCallbackName=\"ActorVfx\"\r\n"
-            + "        NamedCallbackParam=\"" + xmlSourceTarget + "\" />"
-            + channelBlock
-            + "\r\n\r\nPictoACT StaticVfx 复现(适合需要指定场地坐标/持续时间时测试)：\r\n"
-            + "CallbackName: PictoACT\r\n"
-            + "CallbackParam:\r\n"
-            + "StaticVfx: " + path + "\r\n"
-            + "Tag: TestVfx_${_timestamp}\r\n"
-            + "Pos: ${_me.x}, ${_me.y}, ${_me.z}\r\n"
-            + "t: 5\r\n\r\n"
-            + "说明：\r\n"
-            + "- ActorVfx/Channeling 是复现游戏特效，不等于稳定画范围。\r\n"
-            + "- vfx/channeling/eff 通常是连线/分摊/大圈这类频道特效，可用 Channeling 或 ActorVfx 测。\r\n"
-            + "- 钢铁/月环/踩踏/点名 AOE 更像 Omen/几何范围，TRN 中优先用 PictoACT 的 Circle/Donut/Rect/Fan/Omen 画。\r\n";
-    }
-
     private void RebuildConfigPanel()
     {
         if (_pluginScreenSpace == null)
@@ -604,7 +611,7 @@ public sealed class PluginMain : IActPluginV1
             + Environment.NewLine
             + Win32.GetFfxivClientRectText()
             + Environment.NewLine
-            + _liveVfxMonitor.StatusText;
+            + _vfxMonitorController.StatusText;
     }
 
     private static RuntimeDiagnosticsSnapshot CloneRuntimeDiagnostics(RuntimeDiagnosticsSnapshot source)
@@ -645,7 +652,7 @@ public sealed class PluginMain : IActPluginV1
 
     private void ShowTestOverlay()
     {
-        _testOverlay = new TestOverlayForm(_config, _relatedLogStore, _partyListTracker, _actCastProgressStore, _liveVfxMonitor, _entityActivityTracker);
+        _testOverlay = new TestOverlayForm(_config, _relatedLogStore, _partyListTracker, _actCastProgressStore, _entityActivityTracker);
         _testOverlay.Show();
         SetStatus("Entity ESP test overlay shown");
     }

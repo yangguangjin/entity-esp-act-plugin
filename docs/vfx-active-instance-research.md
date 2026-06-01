@@ -50,6 +50,26 @@ tools/EntityEspProbe/bin/Debug/net48/EntityEspProbe.exe probe-vfx-object 220 40
 - 不能靠“位置合理 + resourceInstance 指针形状”盲扫 `VfxObject`。
 - 需要从真实创建函数返回的 `VfxObject*` 或对象列表/root 出发。
 
+### `probe-vfx-world`
+
+命令：
+
+```bash
+dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -c Release -- probe-vfx-world 8000 80
+```
+
+当前验证：
+- `Client::Graphics::Scene::World.Instance` 签名 `48 8B 05 ?? ?? ?? ?? 48 8B 50 40` 命中 1 次。
+- 现场解析到 `Scene.World` 指针，并从 `World + 0x30 / +0x40` 找到 scene root。
+- 遍历 `ChildObject` / `NextSiblingObject` 图时，现场访问约 2700 个 scene object，可解析约 15 个 active VFX。
+- 可稳定读取 `VfxObject` vtable、position、caster/target、`VfxResourceInstance` 和 `.avfx` path。
+- 当前现场 VfxObject vtable 示例：`0x7FF66E88DDD0`；不同游戏版本/进程基址会变化，runtime 不硬编码该绝对地址。已确认能解析 `.avfx` 的 vtable 会被缓存为稳定 VFX 类型；未知 vtable 仍会尝试解析，失败后只短暂抑制，避免副本中新增 VFX 子类被首个环境 VFX vtable 挡住。
+
+结论：
+- 这是当前 ACT 插件 runtime 的主入口。
+- 插件不再用 `.avfx` 全内存字符串扫描驱动 VFX 面板。
+- VFX 面板 UI tick 只读取上一帧缓存；后台 `VfxSnapshotSampler` 按 `VfxSampleHz` 直接读取 `Scene.World` active VFX graph，并按玩家位置做距离过滤。
+
 ### `probe-vfx-chain`
 
 命令：
@@ -136,21 +156,66 @@ GameObject
 
 ## 推荐下一步实现路线
 
-### 1. 先做 helper/probe，不直接进 ACT runtime
+### 1. 当前 runtime：ACT 插件直接读 Scene.World active VFX graph
 
-ACT 插件是 out-of-process 读 FF14 内存，不适合直接 hook FF14 函数。
+ACT 插件仍是 out-of-process 读 FF14 内存，不 hook FF14 函数；用户可见的 VFX 面板仍整合在 ACT 插件中，由插件生命周期和配置按钮自动启停。
 
-推荐做一个独立 helper：
-- Dalamud 测试插件，或
-- 注入式 probe/helper。
+当前 runtime 读取链路：
 
-捕获：
+```text
+VfxMonitorController
+  -> ActiveVfxMemoryService
+  -> Scene.World.Instance signature
+  -> World + 0x30 / +0x40 scene roots
+  -> traverse ChildObject / NextSiblingObject
+  -> VfxObjectProbeCache(confirmed vtable always probe, unknown vtable retry, failed vtable short TTL skip)
+  -> VfxObject +0x2A0 VfxResourceInstance
+  -> +0x08 -> +0x18 -> ResourceHandle.FileName +0x48
+  -> VfxMonitorEntry(Source=ActiveInstance, path, position, caster/target)
+  -> ActiveVfxDisplayCache(log-style 10s retention + short-lived N/M hold)
+  -> VfxDistanceFilter with ObjectTable self position
+  -> VfxMonitorForm per RenderFps tick
+```
+
+这个方案解决的问题：
+- 不再“扫描一次 sleep 一次”。
+- 不再做 `.avfx` 全内存扫描驱动 UI。
+- 能显示当前 `Scene.World` 中仍 active 的 VFX 实例，作为面板上方实时存活区，距离和 position 随当前玩家坐标刷新。
+- 能把首次观测到的 VFX 快照写入面板下方历史日志区，距离和 position 不会因为玩家移动而覆盖。
+- 能把刚消失的 active VFX 像日志一样默认保留 30 秒。
+- 短命 VFX 从首次到末次 active 小于等于 N 秒时，可在普通窗口后额外续显 M 秒并标记 `HOLD`。
+- 能读 position 并按 `VfxMaxDistance` 过滤。
+- 面板工具栏能复制全部文本、复制选中/当前行、复制去重 `.avfx` 路径列表，并可暂停刷新，避免高频刷新时手动选择被重置。
+- 未知 vtable 不再因已发现一个 VFX vtable 就永久跳过；进入副本后如果出现新的 VFX 子类，runtime 会周期性尝试解析并在成功后加入确认集。
+
+### 2. Probe 仍作为维护验证工具
+
+需要游戏更新后继续验证：
+- `probe-vfx-world`：验证 `Scene.World` 签名、root、active VfxObject path。
+- `probe-vfx-functions`：验证 `ActorVfxCreate` / `StaticVfxRun` / `VfxObjectCreate` 等签名，作为后续 create/remove 生命周期补强。
+- `probe-character-vfx`：只作为 actor-bound/omen/tether 方向参考，不作为主入口。
+
+### 3. 字符串扫描降级为离线候选工具
+
+`.avfx` 字符串扫描仍可在 `EntityEspProbe` 中用于离线候选采集和历史对比，但不再作为 ACT 插件 VFX 面板 runtime 数据源。保留原因：
+- 写触发器时仍可用 `scan-avfx-memory` / `capture-cast-vfx` 做候选 path 收集。
+- 当 `Scene.World` 签名或 VfxObject 结构在游戏更新后失效时，可用它辅助判断客户端资源 path 是否仍能读到。
+
+不再用于 runtime 的原因：
+- 扫描有频率和分片范围。
+- 只能读资源字符串，不能证明 active。
+- 没有 position/caster/target。
+- 性能和实时性不满足每帧需求。
+
+### 4. 后续可补强：create/remove 生命周期
+
+如果后续发现某些 VFX 不挂在 `Scene.World` object graph 上，下一步再用 helper/Dalamud/injected probe 捕获：
 - `ActorVfxCreate`
 - `ActorVfxRemove`
 - `StaticVfxCreate/Run`
 - `StaticVfxRemove`
 
-记录：
+目标记录字段：
 
 ```text
 timestamp
@@ -164,26 +229,6 @@ VfxObject.StaticCaster / StaticTarget
 caster/target EntityId / OwnerId / Position
 ```
 
-### 2. ACT 插件消费 helper 输出
-
-为了分发和稳定，可以让 ACT 插件只消费 helper 输出：
-- 本地 named pipe
-- localhost websocket/http
-- shared memory
-- 临时内存 ring buffer
-
-不要把 hook 逻辑塞进 ACT 插件主 DLL。
-
-### 3. 保留字符串扫描作为 fallback
-
-如果 helper 不存在：
-- 继续使用当前增量热点字符串扫描。
-- UI 明确标注这是 `path scan fallback`，不是 active instance。
-
-如果 helper 存在：
-- UI 显示 active VFX instance。
-- 可展示 owner/position/caster/target。
-
 ## ACT 网络日志的作用
 
 ACT / cactbot 网络日志不能提供 `.avfx path`，但能提供 action 语义：
@@ -194,13 +239,15 @@ ACT / cactbot 网络日志不能提供 `.avfx path`，但能提供 action 语义
 - `37` action sync
 
 推荐做法：
-- helper 记录 VFX instance。
+- 插件内 VFX 面板记录当前 `Scene.World` active VFX instance。
 - ACT 网络日志记录 action/source/target/position。
 - 按时间窗、sourceId、targetId、位置距离进行关联。
 
 ## 当前结论
 
-- 仅靠 ACT out-of-process 内存读取，想稳定拿 active VFX instance 很难。
-- 公开资料证明 hook 创建函数是正路。
-- 当前客户端签名可定位函数。
-- 下一步应实现 VFX hook helper/probe，再把结果接入 ACT overlay。
+- 当前 ACT 插件 runtime 已切到 `ActiveVfxMemoryService`：直接读 `Scene.World` active VFX graph，不再用 PathScanFallback 扫描线程驱动 UI。
+- VFX 面板已拆成上方实时存活区和下方历史日志区：实时区保持内存实时距离/position，历史区由 `ActiveVfxDisplayCache` 保留首次观测快照。
+- `ActiveVfxDisplayCache` 会把刚消失的 active VFX 按日志式窗口默认保留 30 秒；短命 VFX 可在普通窗口后额外续显 M 秒，`HOLD` 只表示显示保留，不表示仍在 active graph。
+- 现场 probe 已验证 `probe-vfx-world` 能解析 active VFX path、position、caster/target 与 `VfxResourceInstance`。
+- 公开资料证明 hook 创建函数仍是进一步补全生命周期的正路，但 hook 不应直接塞进 ACT 插件主 DLL。
+- 字符串扫描只保留为 `EntityEspProbe` 离线候选/维护工具，不作为当前用户可见 VFX 面板的数据源。

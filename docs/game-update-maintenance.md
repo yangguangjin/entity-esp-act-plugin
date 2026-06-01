@@ -16,7 +16,7 @@ dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -- update-audit
 - `ObjectTable` hits/resolved/entities
 - `Control/Camera` matrix 状态
 - `TargetSystem` hardTarget 状态
-- `VFX string scan` paths 数量
+- `VFX Scene.World` hits/root/active 数量
 
 ## 哪些内容不依赖安装路径
 
@@ -105,19 +105,45 @@ dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -- read-camera
 dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -- read-target
 ```
 
-### 4. VFX 字符串扫描
+### 4. VFX Scene.World active graph
 
-用途：当前 Live VFX 面板的资源路径级显示。
+用途：当前 VFX 面板的实时 active instance 读取，包含 path、position、caster/target、距离过滤；面板上半区显示实时存活 VFX，下半区显示冻结首次观测快照的历史日志，默认 30 秒保留并支持短命续显。
+
+当前依赖：
+
+- `Scene.World.Instance` 签名：`48 8B 05 ?? ?? ?? ?? 48 8B 50 40`
+- `World + 0x30 / +0x40` scene root 指针。
+- `Client::Graphics::Scene::Object` 链：`ChildObject +0x30`、`NextSiblingObject +0x28`。
+- `VfxObject.Position +0x50`。
+- `VfxObject.ActorCaster +0x128` / `ActorTarget +0x130`。
+- `VfxObject.StaticCaster +0x1B8` / `StaticTarget +0x1C0`。
+- `VfxObject.VfxResourceInstance +0x2A0`。
+- `VfxResourceInstance +0x08 -> +0x18 -> ResourceHandle.FileName +0x48`。
+- `ActiveVfxDisplayCache` 历史日志普通保留窗口：`VfxDisplaySeconds = 30`。
+- 短命续显配置：`VfxShortLivedMaxAgeSeconds = 2`，`VfxShortLivedHoldSeconds = 15`。
+
+审计判断：
+
+- `worldSig hits=1` 且 `withPath > 0`：通常可用。
+- `worldSig hits=0`：更新 `Scene.World.Instance` 签名。
+- `visited > 0` 但 `withPath=0`：优先检查 root offset、VfxObject offset、ResourceHandle path 链。
+- `withPath > 0` 但距离全为 `n/a`：检查 ObjectTable slot 0 自身坐标读取。
+- `withPath > 0` 但面板仍看不清短命 VFX：检查配置页 `VFX 日志式显示秒数`、`VFX 短命判定秒数 N`、`VFX 短命续显秒数 M`。
+
+辅助命令：
+
+```bash
+dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -- probe-vfx-world 8000 80
+```
+
+### 5. VFX 字符串扫描离线 fallback
+
+用途：离线候选 path 采集和 active graph 失效时的资源路径排查；不再作为 ACT VFX 面板 runtime 数据源。
 
 当前依赖：
 
 - 进程可读内存区域枚举。
 - `.avfx` ASCII 路径字符串提取规则。
-
-审计判断：
-
-- `paths > 0`：资源路径扫描可用。
-- `paths=0`：检查可读内存枚举、字符串提取规则，或游戏资源字符串布局是否变化。
 
 辅助命令：
 
@@ -125,16 +151,17 @@ dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -- read-target
 dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -- scan-avfx-memory
 ```
 
-### 5. Active VFX Instance 方向
+### 6. Active VFX create/remove 后续补强
 
-目标：从资源路径级升级到真正的活跃 VFX 实例，包含 path、owner actor、position、caster/target。
+目标：补齐不挂在 `Scene.World` graph 上的特殊 VFX，并记录更完整的生命周期。
 
 当前结论：
 
+- `Scene.World` active graph 已经能作为 ACT runtime 主入口。
 - `Character.VfxContainer` 已用 `probe-character-vfx` 验证，当前现场多数 Player/BattleNpc slot 为 0，不能作为主入口。
 - 盲扫 `VfxObject` 结构噪声很大，不能进入 runtime。
 - 从 `.avfx` 字符串地址反查引用为 0，说明字符串扫描命中的可能是缓存/字符串池副本，不能可靠反推 ResourceHandle/VfxObject。
-- 公开资料和 VFXEditor 代码表明，正确路线是捕获 VFX 创建/移除函数，而不是事后扫内存。
+- 公开资料和 VFXEditor 代码表明，create/remove hook 仍是补完整生命周期的正路，但不应直接塞进 ACT 主 DLL。
 
 游戏更新后需要重点维护这些签名：
 
@@ -151,7 +178,7 @@ dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -- probe-vfx-fun
 - `VfxObjectCreate`
 - `CallTrigger`
 
-active instance helper 仍需验证这些结构偏移：
+active instance / graph helper 仍需验证这些结构偏移：
 
 - `VfxObject.Position`：`+0x50`
 - `VfxObject.ActorCaster`：`+0x128`
@@ -161,7 +188,7 @@ active instance helper 仍需验证这些结构偏移：
 - `VfxObject.VfxResourceInstance`：`+0x2A0`
 - `GameObject.EntityId` / `OwnerId` / `Position`
 
-推荐架构：ACT 插件不要直接 out-of-process hook FF14；先做 Dalamud/helper/injected probe 捕获 create/remove，再通过 named pipe/local feed 给 ACT overlay 消费。详见 `docs/vfx-active-instance-research.md`。
+推荐架构：ACT 插件 runtime 优先直接遍历 `Scene.World` active graph；如果后续发现 graph 覆盖不全，再用 Dalamud/helper/injected probe 捕获 create/remove 生命周期，并通过 named pipe/local feed 给 ACT overlay 消费。详见 `docs/vfx-active-instance-research.md`。
 
 ## 发布前检查清单
 

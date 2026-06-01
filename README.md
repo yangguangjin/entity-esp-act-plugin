@@ -14,7 +14,7 @@ Entity ESP ACT Plugin 是一个用于 FF14 / ACT 的实体调试与 Overlay 插�
 - ACT 日志关联：可采集并显示实体相关 ACT 日志，支持不同日志类型独立开关和简化显示。
 - 实体生命周期：可按 ACT 日志活动给实体标签续期，默认 15 秒无活动后自动隐藏，减少短命机制物残留。
 - 右侧日志面板：适合录屏分析，把近期实体相关日志固定显示在右侧。
-- VFX 监控面板：在左上角显示近期 VFX 路径，并支持复制 Triggernometry 复现片段。
+- VFX 实时内存面板：插件内置管理的独立 VFX 面板；通过配置显示/隐藏，按 `VFX 内存采样 Hz` 后台遍历 FF14 `Scene.World` 的 active `VfxObject`，上方显示当前实时存活 VFX，下方用历史日志区保留首次观测快照、位置、距离、caster/target；面板工具栏支持复制全部、复制选中/当前行、复制去重路径列表和暂停刷新。
 - 样式配置：支持背景块、文字、读条条形、锚点十字等颜色和透明度配置；配置 UI 已按基础、标签、日志、VFX、样式、名单和诊断等功能分组，并用标题横线分隔。
 - 独立诊断工具：`tools/EntityEspProbe` 用于实体抓取、签名验证、VFX 候选观察等重型诊断，避免拖慢 ACT 插件页。
 
@@ -72,7 +72,7 @@ src/EntityEspActPlugin.Act/bin/Release/net48/EntityEspActPlugin.Act.dll
 
 ## 打包与发布
 
-版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.5` 对应 tag `v0.1.5`。
+版本号统一维护在 `Directory.Build.props` 的 `<Version>` 字段，发布 tag 必须使用同版本的 `vX.Y.Z` 格式，例如当前版本 `0.1.6` 对应 tag `v0.1.6`。
 
 本地生成可发布 zip：
 
@@ -114,7 +114,7 @@ git push origin vX.Y.Z
 2. `DataSource` 实战使用 `Real`，样式测试可使用 `Mock`。
 3. 按需要开启实体标签字段，例如 `EntityId`、HP、坐标、`BNpcId`、`BNpcName`、距离。
 4. 打本写触发器时，可开启实体旁 ACT 日志或右侧固定日志面板。
-5. 需要观察 VFX 时，开启 `启用 VFX 监控与左上角列表`，然后使用 `复制最近 VFX 的 TRN 复现片段`。
+5. 需要观察 VFX 时，在配置页开启 `显示 VFX 监控面板`；面板随插件/配置自动启停，按 `VFX 内存采样 Hz` 后台读取 `Scene.World` active VFX，上方实时区看当前存活，下方历史区回看首次观测记录；复制时优先用面板工具栏，手动框选前可勾选 `暂停刷新`。
 
 更多字段说明见：`docs/configuration-guide.md`。
 
@@ -128,6 +128,7 @@ DataSource=Real
 背景透明度=0 或较低数值
 实体扫描 Hz=30
 渲染 FPS=60
+VFX 内存采样 Hz=10
 只开启当前需要的标签字段
 ```
 
@@ -147,13 +148,17 @@ DataSource=Real
 ### VFX 观察
 
 ```text
-启用 VFX 监控与左上角列表=true
-VFX 保留窗口秒数=30
-VFX NEW高亮秒数=5
-VFX 最大显示行数=8
+显示 VFX 监控面板=true
+VFX 最远显示距离=100
+VFX 日志式显示秒数=30
+VFX 最大显示条数=12
+VFX 内存采样 Hz=10
+VFX 短命判定秒数 N=2
+VFX 短命续显秒数 M=15
+渲染 FPS=60 或 165
 ```
 
-适合观察机制触发时出现的 `.avfx` 路径，并复制 TRN 复现片段。
+适合观察机制触发时当前存活或刚刚消失的 `.avfx` 实例。当前实现不再用“扫描一次 sleep 一次”的 PathScanFallback 面板，也不在 WinForms 面板 UI tick 中同步做重型内存遍历；`ActiveVfxMemoryService` 按 `VFX 内存采样 Hz` 在后台读取 `Client::Graphics::Scene::World`，遍历 active `VfxObject`，解析 `VfxResourceInstance -> ResourceHandle.FileName`，VFX 面板 UI 最多 30 FPS 读取上一帧缓存并刷新文本。面板分成两块：上方 `========== 当前实时存活 VFX ==========` 保持内存实时扫描语义，距离和 position 会按采样时玩家坐标刷新；下方 `========== 历史 VFX 日志 ==========` 记录首次观测快照，距离和 position 不会因为玩家移动而被覆盖。active VFX 离开 `Scene.World` 后会像日志一样默认保留 30 秒；如果某个 VFX 从首次到末次 active 小于等于 N 秒，则在普通 30 秒窗口后额外续显 M 秒，面板标记为 `HOLD`，方便看清一闪而过的短命特效。距离过滤按玩家当前位置计算；面板工具栏可直接复制全部、复制选中/当前行、复制去重 `.avfx` 路径列表，并可暂停刷新方便手动框选。runtime 不再把第一个 VFX vtable 当成唯一白名单，未知 vtable 会周期性短 TTL 重试，减少进入副本后只剩环境 VFX、不捕获新机制 VFX 的情况；如果 FF14 结构或签名失效，先用 `tools/EntityEspProbe -- probe-vfx-world` 验证。
 
 ## 诊断与维护
 
@@ -186,7 +191,7 @@ dotnet run --project tools/EntityEspProbe/EntityEspProbe.csproj -c Release -- --
 
 - 本插件用于本机调试和触发器编写辅助，不会让其他玩家看到标记。
 - 游戏更新后，实体、相机或 VFX 相关内存结构可能变化，需要重新验证。
-- 如果 overlay 或 ACT 插件页卡顿，优先降低渲染 FPS、实体扫描 Hz，并关闭不需要的日志类型。
+- 如果 overlay、VFX 面板或 ACT 插件页卡顿，优先降低渲染 FPS、实体扫描 Hz、VFX 内存采样 Hz，并关闭不需要的日志类型。
 - 不建议在 ACT UI 线程中加入全内存扫描或全 `.text` 扫描。
 
 ## 开源协议

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using EntityEspActPlugin.Core.Models;
 
@@ -28,7 +29,12 @@ public sealed class RealEntitySource : IEntitySource, IProcessMemoryDiagnosticSo
 
     public IReadOnlyList<EntitySnapshot> GetEntities()
     {
-        _memoryReader.Refresh();
+        if (!_memoryReader.IsReady)
+        {
+            // 功能：FF14 未启动或句柄暂不可用时定期重试，不在每个 EntityScanHz tick 重复 OpenProcess。
+            _memoryReader.RefreshIfDue(TimeSpan.FromSeconds(1));
+        }
+
         if (!_memoryReader.IsReady)
         {
             IsReady = false;
